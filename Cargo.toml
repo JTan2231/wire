@@ -1,0 +1,9 @@
+[package]
+name = "wire"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+native-tls = "0.2.12"
+scribe = { git = "https://github.com/JTan2231/scribe.git" }
+serde_json = "1.0.134"
