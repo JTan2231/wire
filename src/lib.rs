@@ -52,7 +52,7 @@ impl Wire {
         api: API,
         system_prompt: &str,
         chat_history: &Vec<Message>,
-    ) -> Result<Message, std::io::Error> {
+    ) -> Result<Message, Box<dyn std::error::Error>> {
         // TODO: error handling here could probably be a bit more fleshed out
         let (response, usage_delta) =
             match network::prompt(api.clone(), system_prompt, chat_history) {
@@ -111,7 +111,7 @@ impl AnonymousWire {
         api: API,
         system_prompt: &str,
         chat_history: &Vec<Message>,
-    ) -> Result<Message, std::io::Error> {
+    ) -> Result<Message, Box<dyn std::error::Error>> {
         // TODO: error handling here could probably be a bit more fleshed out
         let (response, _) = match network::prompt(api, system_prompt, chat_history) {
             Ok(r) => (r.0, r.1),

@@ -1,4 +1,4 @@
-#[derive(PartialEq, Clone, Debug /* , serde::Serialize, serde::Deserialize */)]
+#[derive(PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MessageType {
     System,
     User,
@@ -15,46 +15,46 @@ impl MessageType {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq /* , serde::Serialize, serde::Deserialize */)]
-// #[serde(tag = "provider", content = "model")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "provider", content = "model")]
 pub enum API {
-    // #[serde(rename = "openai")]
+    #[serde(rename = "openai")]
     OpenAI(OpenAIModel),
-    // #[serde(rename = "groq")]
+    #[serde(rename = "groq")]
     Groq(GroqModel),
-    // #[serde(rename = "anthropic")]
+    #[serde(rename = "anthropic")]
     Anthropic(AnthropicModel),
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq /* , serde::Serialize, serde::Deserialize */)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OpenAIModel {
-    // #[serde(rename = "gpt-4o")]
+    #[serde(rename = "gpt-4o")]
     GPT4o,
-    // #[serde(rename = "gpt-4o-mini")]
+    #[serde(rename = "gpt-4o-mini")]
     GPT4oMini,
-    // #[serde(rename = "o1-preview")]
+    #[serde(rename = "o1-preview")]
     O1Preview,
-    // #[serde(rename = "o1-mini")]
+    #[serde(rename = "o1-mini")]
     O1Mini,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq /* , serde::Serialize, serde::Deserialize */)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GroqModel {
-    // #[serde(rename = "llama3-70b-8192")]
+    #[serde(rename = "llama3-70b-8192")]
     LLaMA70B,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq /* , serde::Serialize, serde::Deserialize */)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AnthropicModel {
-    // #[serde(rename = "claude-3-opus-20240229")]
+    #[serde(rename = "claude-3-opus-20240229")]
     Claude3Opus,
-    // #[serde(rename = "claude-3-sonnet-20240229")]
+    #[serde(rename = "claude-3-sonnet-20240229")]
     Claude3Sonnet,
-    // #[serde(rename = "claude-3-haiku-20240307")]
+    #[serde(rename = "claude-3-haiku-20240307")]
     Claude3Haiku,
-    // #[serde(rename = "claude-3-5-sonnet-latest")]
+    #[serde(rename = "claude-3-5-sonnet-latest")]
     Claude35Sonnet,
-    // #[serde(rename = "claude-3-5-haiku-latest")]
+    #[serde(rename = "claude-3-5-haiku-latest")]
     Claude35Haiku,
 }
 
@@ -124,7 +124,7 @@ impl API {
     }
 }
 
-#[derive(Clone, Debug /* , serde::Serialize, serde::Deserialize */)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub message_type: MessageType,
     pub content: String,

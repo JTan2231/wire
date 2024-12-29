@@ -1,21 +1,15 @@
-use native_tls::TlsStream;
 use std::env;
 use std::io::BufRead;
-use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 
 use scribe::{error, info, Logger};
 
 use crate::types::*;
 
-// TODO: this is copied from TLLM
-//       i don't like duplicate files scattered about
-//
-// TODO: there needs to be some refactoring done here
-//       to accommodate the fact that model/system prompt metadata
-//       is bundled with the messages
-
-fn build_request(params: &RequestParams) -> String {
+fn build_request(
+    client: &reqwest::blocking::Client,
+    params: &RequestParams,
+) -> reqwest::blocking::RequestBuilder {
     let body = match params.provider.as_str() {
         "openai" => serde_json::json!({
             "model": params.model,
@@ -73,53 +67,30 @@ fn build_request(params: &RequestParams) -> String {
         _ => panic!("Invalid provider for request_body: {}", params.provider),
     };
 
-    let json = serde_json::json!(body);
-    let json_string = serde_json::to_string(&json).expect("Failed to serialize JSON");
+    let url = format!("https://{}:{}{}", params.host, params.port, params.path);
+    let mut request = client.post(url.clone()).json(&body);
 
-    let (auth_string, api_version, path) = match params.provider.as_str() {
-        "openai" => (
-            format!("Authorization: Bearer {}\r\n", params.authorization_token),
-            "\r\n".to_string(),
-            params.path.clone(),
-        ),
-        "groq" => (
-            format!("Authorization: Bearer {}\r\n", params.authorization_token),
-            "\r\n".to_string(),
-            params.path.clone(),
-        ),
-        "anthropic" => (
-            format!("x-api-key: {}\r\n", params.authorization_token),
-            "anthropic-version: 2023-06-01\r\n\r\n".to_string(),
-            params.path.clone(),
-        ),
-        "gemini" => (
-            "\r\n".to_string(),
-            "\r\n".to_string(),
-            format!("{}?key={}", params.path, params.authorization_token),
-        ),
+    match params.provider.as_str() {
+        "openai" | "groq" => {
+            request = request.header(
+                "Authorization",
+                format!("Bearer {}", params.authorization_token),
+            );
+        }
+        "anthropic" => {
+            request = request
+                .header("x-api-key", &params.authorization_token)
+                .header("anthropic-version", "2023-06-01");
+        }
+        "gemini" => {
+            request = client
+                .post(format!("{}?key={}", url, params.authorization_token))
+                .json(&body);
+        }
         _ => panic!("Invalid provider: {}", params.provider),
-    };
+    }
 
-    format!(
-        "POST {} HTTP/1.1\r\n\
-        Host: {}\r\n\
-        Content-Type: application/json\r\n\
-        Content-Length: {}\r\n\
-        Accept: */*\r\n\
-        {}\
-        {}\
-        {}",
-        path,
-        params.host,
-        json_string.len(),
-        auth_string,
-        if api_version == "\r\n" && auth_string == "\r\n" {
-            String::new()
-        } else {
-            api_version
-        },
-        json_string.trim()
-    )
+    request
 }
 
 fn get_openai_request_params(
@@ -261,68 +232,59 @@ fn send_delta(tx: &std::sync::mpsc::Sender<String>, delta: String) {
     };
 }
 
+fn unescape(content: &str) -> String {
+    content
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace("\\\"", "\"")
+        .replace("\\'", "'")
+        .replace("\\\\", "\\")
+}
+
 // TODO: at some point i think the tokenizer will have to come down here
 //       as that's how we'll track usage metrics from streams
 
 fn process_openai_stream(
-    stream: TlsStream<TcpStream>,
+    response: reqwest::blocking::Response,
     tokenizer: &crate::tiktoken::Tokenizer,
     tx: &std::sync::mpsc::Sender<String>,
 ) -> Result<(String, Usage), std::io::Error> {
     info!("processing openai stream");
-    let mut reader = std::io::BufReader::new(stream);
-    let mut headers = String::new();
-    while reader.read_line(&mut headers).unwrap() > 2 {
-        if headers == "\r\n" {
+    let reader = std::io::BufReader::new(response);
+    let mut usage = Usage::new();
+    let mut full_message = String::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if !line.starts_with("data: ") {
+            continue;
+        }
+
+        let payload = line[6..].trim();
+        if payload.is_empty() || payload == "[DONE]" {
             break;
         }
 
-        headers.clear();
-    }
-
-    let mut usage = Usage::new();
-
-    let mut full_message = String::new();
-    let mut event_buffer = String::new();
-    while reader.read_line(&mut event_buffer).unwrap() > 0 {
-        if event_buffer.starts_with("data: ") {
-            let payload = event_buffer[6..].trim();
-
-            if payload.is_empty() || payload == "[DONE]" {
-                break;
+        let response_json: serde_json::Value = match serde_json::from_str(&payload) {
+            Ok(json) => json,
+            Err(e) => {
+                error!("JSON parse error: {}", e);
+                error!("Error payload: {}", payload);
+                continue;
             }
+        };
 
-            let response_json: serde_json::Value = match serde_json::from_str(&payload) {
-                Ok(json) => json,
-                Err(e) => {
-                    error!("JSON parse error: {}", e);
-                    error!("Error payload: {}", payload);
+        let mut delta = unescape(&response_json["choices"][0]["delta"]["content"].to_string());
+        if delta != "null" {
+            delta = delta[1..delta.len() - 1].to_string();
+            send_delta(tx, delta.clone());
 
-                    serde_json::Value::Null
-                }
-            };
-
-            let mut delta = response_json["choices"][0]["delta"]["content"]
-                .to_string()
-                .replace("\\n", "\n")
-                .replace("\\t", "\t")
-                .replace("\\\"", "\"")
-                .replace("\\'", "'")
-                .replace("\\\\", "\\");
-
-            if delta != "null" {
-                delta = delta[1..delta.len() - 1].to_string();
-                send_delta(tx, delta.clone());
-
-                usage.tokens_out += tokenizer.encode(&delta).len() as u64;
-                full_message.push_str(&delta);
-            }
+            usage.tokens_out += tokenizer.encode(&delta).len() as u64;
+            full_message.push_str(&delta);
         }
-
-        event_buffer.clear();
     }
 
-    // TODO: actually calculate usage, obviously
+    // TODO: actually calculate the usage, obviously
     Ok((
         full_message,
         Usage {
@@ -333,62 +295,54 @@ fn process_openai_stream(
 }
 
 fn process_anthropic_stream(
-    stream: TlsStream<TcpStream>,
+    response: reqwest::blocking::Response,
     tokenizer: &crate::tiktoken::Tokenizer,
     tx: &std::sync::mpsc::Sender<String>,
 ) -> Result<(String, Usage), std::io::Error> {
     info!("processing anthropic stream");
-    let mut reader = std::io::BufReader::new(stream);
-    let mut all_headers = Vec::new();
-    let mut headers = String::new();
-    while reader.read_line(&mut headers).unwrap() > 2 {
-        if headers == "\r\n" {
+    let reader = std::io::BufReader::new(response);
+    let mut usage = Usage::new();
+    let mut full_message = String::new();
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if line.starts_with("event: message_stop") {
             break;
         }
 
-        all_headers.push(headers.clone());
-        headers.clear();
-    }
-
-    let mut full_message = all_headers.join("");
-    let mut event_buffer = String::new();
-    while reader.read_line(&mut event_buffer).unwrap() > 0 {
-        if event_buffer.starts_with("event: message_stop") {
-            break;
-        } else if event_buffer.starts_with("data: ") {
-            let payload = event_buffer[6..].trim();
-
-            if payload.is_empty() || payload == "[DONE]" {
-                break;
-            }
-
-            let response_json: serde_json::Value = serde_json::from_str(&payload)?;
-
-            let mut delta = "null".to_string();
-            if response_json["type"] == "content_block_delta" {
-                delta = response_json["delta"]["text"]
-                    .to_string()
-                    .replace("\\n", "\n")
-                    .replace("\\\"", "\"")
-                    .replace("\\'", "'")
-                    .replace("\\\\", "\\");
-
-                // remove quotes
-                delta = delta[1..delta.len() - 1].to_string();
-            }
-
-            if delta != "null" {
-                send_delta(tx, delta.clone());
-
-                usage.tokens_out += tokenizer.encode(&delta).len() as u64;
-                full_message.push_str(&delta);
-            }
+        if !line.starts_with("data: ") {
+            continue;
         }
 
-        event_buffer.clear();
+        let payload = line[6..].trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            break;
+        }
+
+        let response_json: serde_json::Value = match serde_json::from_str(&payload) {
+            Ok(json) => json,
+            Err(e) => {
+                error!("JSON parse error: {}", e);
+                error!("Error payload: {}", payload);
+                continue;
+            }
+        };
+
+        let mut delta = "null".to_string();
+        if response_json["type"] == "content_block_delta" {
+            delta = unescape(&response_json["delta"]["text"].to_string());
+            // Trim quotes from delta
+            delta = delta[1..delta.len() - 1].to_string();
+        }
+
+        if delta != "null" {
+            send_delta(tx, delta.clone());
+            usage.tokens_out += tokenizer.encode(&delta).len() as u64;
+            full_message.push_str(&delta);
+        }
     }
 
-    // TODO: actually calculate usage, obviously
     Ok((
         full_message,
         Usage {
@@ -403,7 +357,7 @@ fn process_anthropic_stream(
 /// JSON response handler for `prompt`
 /// Ideally I think there should be more done here,
 /// maybe something like getting usage metrics out of this
-fn read_json_response(api: API, response_json: serde_json::Value) -> String {
+fn read_json_response(api: &API, response_json: &serde_json::Value) -> String {
     match api {
         API::Anthropic(_) => response_json["choices"][0]["message"]["content"].to_string(),
         API::OpenAI(_) => response_json["choices"][0]["message"]["content"].to_string(),
@@ -439,44 +393,35 @@ pub fn prompt_stream(
     tokenizer: Option<&crate::tiktoken::Tokenizer>,
     tx: std::sync::mpsc::Sender<String>,
 ) -> Result<(Message, Usage), std::io::Error> {
-    let params = get_params(system_prompt, api.clone(), chat_history, false);
-    let request = build_request(&params);
+    let params = get_params(system_prompt, api.clone(), chat_history, true);
+    let client = reqwest::blocking::Client::new();
 
-    let mut stream = connect_https(&params.host, params.port);
-    stream
-        .write_all(request.as_bytes())
-        .expect("Failed to write to stream");
-    stream.flush().expect("Failed to flush stream");
+    let response = build_request(&client, &params)
+        .send()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     let tokenizer = match tokenizer {
         Some(t) => t,
         _ => &crate::tiktoken::Tokenizer::empty(),
     };
 
-    info!("stream written");
     let response = match api {
-        API::Anthropic(_) => process_anthropic_stream(stream, tokenizer, &tx),
-        API::OpenAI(_) => process_openai_stream(stream, tokenizer, &tx),
-        API::Groq(_) => process_openai_stream(stream, tokenizer, &tx),
+        API::Anthropic(_) => process_anthropic_stream(response, tokenizer, &tx),
+        API::OpenAI(_) => process_openai_stream(response, tokenizer, &tx),
+        API::Groq(_) => process_openai_stream(response, tokenizer, &tx),
     };
 
-    let (full_message, usage) = match response {
-        Ok((content, usage)) => (
-            Message {
-                message_type: MessageType::Assistant,
-                content,
-                api,
-                system_prompt: system_prompt.to_string(),
-            },
-            usage,
-        ),
-        Err(e) => {
-            error!("Failed to process stream: {}", e);
-            return Err(e);
-        }
-    };
+    let (content, usage) = response?;
 
-    Ok((full_message, usage))
+    Ok((
+        Message {
+            message_type: MessageType::Assistant,
+            content,
+            api,
+            system_prompt: system_prompt.to_string(),
+        },
+        usage,
+    ))
 }
 
 /// Ad-hoc prompting for an LLM
@@ -486,94 +431,20 @@ pub fn prompt(
     api: API,
     system_prompt: &str,
     chat_history: &Vec<Message>,
-) -> Result<(Message, Usage), std::io::Error> {
+) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
     let params = get_params(system_prompt, api.clone(), chat_history, false);
-    let request = build_request(&params);
+    let client = reqwest::blocking::Client::new();
 
-    let mut stream = connect_https(&params.host, params.port);
-    stream.write_all(request.as_bytes())?;
-    stream.flush()?;
+    let response = build_request(&client, &params).send()?;
+    let response_json: serde_json::Value = response.json()?;
 
-    // TODO: this custom response handler is probably sub par
-    //       I think in the future this should be replaced with something like reqwest
-    //       unless I can find a reason to keep this as bespoke.
-    let mut reader = std::io::BufReader::new(stream);
-    let mut content_length = 0;
-    let mut headers = Vec::new();
-    let mut line = String::new();
-    while reader.read_line(&mut line).unwrap() > 0 {
-        if line == "\r\n" {
-            info!("End of headers");
-            break;
-        }
+    let mut content = read_json_response(&api, &response_json);
 
-        if line.contains("Content-Length") {
-            let parts: Vec<&str> = line.split(":").collect();
-            content_length = parts[1].trim().parse().unwrap();
-        }
-
-        line = line.trim().to_string();
-        headers.push(line.clone());
-        line.clear();
-    }
-
-    let mut decoded_body = String::new();
-
-    // they like to use this transfer encoding for long responses
-    if headers.contains(&"Transfer-Encoding: chunked".to_string()) {
-        let mut buffer = Vec::new();
-        loop {
-            let mut chunk_size = String::new();
-            reader.read_line(&mut chunk_size)?;
-            let chunk_size = usize::from_str_radix(chunk_size.trim(), 16)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-            if chunk_size == 0 {
-                break;
-            }
-
-            let mut chunk = vec![0; chunk_size];
-            reader.read_exact(&mut chunk)?;
-            buffer.extend_from_slice(&chunk);
-
-            reader.read_line(&mut String::new())?;
-        }
-
-        decoded_body = String::from_utf8(buffer).unwrap();
-    } else {
-        if content_length > 0 {
-            reader
-                .take(content_length as u64)
-                .read_to_string(&mut decoded_body)?;
-        }
-    }
-
-    // TODO: probably smarter to do all the processing for the response
-    //       in a single functino outside of the main prompt handler
-    let response_json = serde_json::from_str(&decoded_body);
-
-    if response_json.is_err() {
-        error!("Failed to parse JSON: {}", decoded_body);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Failed to parse JSON",
-        ));
-    }
-
-    let response_json: serde_json::Value = response_json.unwrap();
-
-    let mut content = read_json_response(api);
-
-    content = content
-        .replace("\\\"", "\"")
-        .replace("\\'", "'")
-        .replace("\\\\", "\\");
-
+    content = unescape(&content);
     if content.starts_with("\"") && content.ends_with("\"") {
         content = content[1..content.len() - 1].to_string();
     }
 
-    // TODO: actually calculate usage, obviously
     Ok((
         Message {
             message_type: MessageType::Assistant,
@@ -586,4 +457,201 @@ pub fn prompt(
             tokens_out: 0,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn setup_test_env() {
+        env::set_var("GROQ_API_KEY", "test_groq_key");
+        env::set_var("OPENAI_API_KEY", "test_openai_key");
+        env::set_var("ANTHROPIC_API_KEY", "test_anthropic_key");
+    }
+
+    fn create_test_message(message_type: MessageType, content: &str, api: API) -> Message {
+        Message {
+            message_type,
+            content: content.to_string(),
+            api,
+            system_prompt: "".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_groq_basic_params() {
+        setup_test_env();
+        let system_prompt = "test system prompt".to_string();
+        let api = API::Groq(GroqModel::LLaMA70B);
+        let chat_history = vec![create_test_message(MessageType::User, "Hello", api.clone())];
+
+        let params = get_groq_request_params(system_prompt.clone(), api, &chat_history, false);
+
+        assert_eq!(params.provider, "groq");
+        assert_eq!(params.host, "api.groq.com");
+        assert_eq!(params.path, "/openai/v1/chat/completions");
+        assert_eq!(params.max_tokens, None);
+        assert_eq!(params.system_prompt, None);
+    }
+
+    #[test]
+    fn test_openai_basic_params() {
+        setup_test_env();
+        let system_prompt = "test system prompt".to_string();
+        let api = API::OpenAI(OpenAIModel::GPT4o);
+        let chat_history = vec![create_test_message(MessageType::User, "Hello", api.clone())];
+
+        let params = get_openai_request_params(system_prompt.clone(), api, &chat_history, false);
+
+        assert_eq!(params.provider, "openai");
+        assert_eq!(params.host, "api.openai.com");
+        assert_eq!(params.path, "/v1/chat/completions");
+        assert_eq!(params.max_tokens, None);
+        assert_eq!(params.system_prompt, None);
+    }
+
+    #[test]
+    fn test_anthropic_basic_params() {
+        setup_test_env();
+        let system_prompt = "test system prompt".to_string();
+        let api = API::Anthropic(AnthropicModel::Claude35Sonnet);
+        let chat_history = vec![create_test_message(MessageType::User, "Hello", api.clone())];
+
+        let params = get_anthropic_request_params(system_prompt.clone(), api, &chat_history, false);
+
+        assert_eq!(params.provider, "anthropic");
+        assert_eq!(params.host, "api.anthropic.com");
+        assert_eq!(params.path, "/v1/messages");
+        assert_eq!(params.max_tokens, Some(4096));
+        assert_eq!(params.system_prompt, Some(system_prompt));
+    }
+
+    #[test]
+    fn test_message_handling() {
+        setup_test_env();
+        let system_prompt = "test prompt".to_string();
+        let chat_history = vec![
+            Message {
+                message_type: MessageType::User,
+                content: "First".to_string(),
+                api: API::OpenAI(OpenAIModel::GPT4o),
+                system_prompt: "".to_string(),
+            },
+            Message {
+                message_type: MessageType::Assistant,
+                content: "Second".to_string(),
+                api: API::OpenAI(OpenAIModel::GPT4o),
+                system_prompt: "".to_string(),
+            },
+        ];
+
+        let providers = vec![
+            (API::Groq(GroqModel::LLaMA70B), "groq"),
+            (API::OpenAI(OpenAIModel::GPT4o), "openai"),
+            (API::Anthropic(AnthropicModel::Claude35Sonnet), "anthropic"),
+        ];
+
+        for (api, provider_name) in providers {
+            let params = match api.clone() {
+                API::Groq(_) => {
+                    get_groq_request_params(system_prompt.clone(), api, &chat_history, false)
+                }
+                API::OpenAI(_) => {
+                    get_openai_request_params(system_prompt.clone(), api, &chat_history, false)
+                }
+                API::Anthropic(_) => {
+                    get_anthropic_request_params(system_prompt.clone(), api, &chat_history, false)
+                }
+            };
+
+            match provider_name {
+                "gemini" | "anthropic" => {
+                    assert_eq!(
+                        params.messages.len(),
+                        2,
+                        "Wrong message count for {}",
+                        provider_name
+                    );
+                }
+                "groq" | "openai" => {
+                    assert_eq!(
+                        params.messages.len(),
+                        3,
+                        "Wrong message count for {}",
+                        provider_name
+                    );
+                    assert_eq!(params.messages[0].message_type, MessageType::System);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_api_key_handling() {
+        let test_cases = vec![
+            ("GROQ_API_KEY", API::Groq(GroqModel::LLaMA70B)),
+            ("OPENAI_API_KEY", API::OpenAI(OpenAIModel::GPT4o)),
+            (
+                "ANTHROPIC_API_KEY",
+                API::Anthropic(AnthropicModel::Claude35Sonnet),
+            ),
+        ];
+
+        for (key, api) in test_cases {
+            env::remove_var(key);
+            let system_prompt = "test".to_string();
+            let chat_history = vec![];
+            let result = std::panic::catch_unwind(|| match api {
+                API::Groq(_) => get_groq_request_params(
+                    system_prompt.clone(),
+                    api.clone(),
+                    &chat_history,
+                    false,
+                ),
+                API::OpenAI(_) => get_openai_request_params(
+                    system_prompt.clone(),
+                    api.clone(),
+                    &chat_history,
+                    false,
+                ),
+                API::Anthropic(_) => get_anthropic_request_params(
+                    system_prompt.clone(),
+                    api.clone(),
+                    &chat_history,
+                    false,
+                ),
+            });
+            assert!(result.is_err(), "Should panic when {} is not set", key);
+        }
+    }
+
+    #[test]
+    fn test_streaming_all_providers() {
+        setup_test_env();
+        let system_prompt = "test".to_string();
+        let chat_history = vec![];
+
+        let providers = vec![
+            API::Groq(GroqModel::LLaMA70B),
+            API::OpenAI(OpenAIModel::GPT4o),
+            API::Anthropic(AnthropicModel::Claude35Sonnet),
+        ];
+
+        for api in providers {
+            let params = match api.clone() {
+                API::Groq(_) => {
+                    get_groq_request_params(system_prompt.clone(), api, &chat_history, true)
+                }
+                API::OpenAI(_) => {
+                    get_openai_request_params(system_prompt.clone(), api, &chat_history, true)
+                }
+                API::Anthropic(_) => {
+                    get_anthropic_request_params(system_prompt.clone(), api, &chat_history, true)
+                }
+            };
+            assert!(params.stream);
+        }
+    }
 }
