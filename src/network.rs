@@ -390,7 +390,7 @@ pub fn prompt_stream(
     api: API,
     chat_history: &Vec<Message>,
     system_prompt: &str,
-    tokenizer: Option<&crate::tiktoken::Tokenizer>,
+    tokenizer: &crate::tiktoken::Tokenizer,
     tx: std::sync::mpsc::Sender<String>,
 ) -> Result<(Message, Usage), std::io::Error> {
     let params = get_params(system_prompt, api.clone(), chat_history, true);
@@ -399,11 +399,6 @@ pub fn prompt_stream(
     let response = build_request(&client, &params)
         .send()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-    let tokenizer = match tokenizer {
-        Some(t) => t,
-        _ => &crate::tiktoken::Tokenizer::empty(),
-    };
 
     let response = match api {
         API::Anthropic(_) => process_anthropic_stream(response, tokenizer, &tx),
