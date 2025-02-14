@@ -1,6 +1,6 @@
 mod network;
 mod tiktoken;
-mod types;
+pub mod types;
 
 use scribe::{error, Logger};
 use std::collections::HashMap;
