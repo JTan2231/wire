@@ -8,6 +8,7 @@ use std::thread;
 
 use fancy_regex::Regex;
 use rustc_hash::FxHashMap as HashMap;
+use scribe::{info, Logger};
 
 type Rank = u32;
 
@@ -25,13 +26,28 @@ impl Tokenizer {
     // TODO: tokenizer file management
     //
     // NOTE: only supports the GPT-4o token mappings--this is probably a TODO
-    pub fn new(token_mapping_filepath: Option<std::path::PathBuf>) -> Result<Self, std::io::Error> {
+    pub fn new(
+        token_mapping_filepath: Option<std::path::PathBuf>,
+        download: Option<bool>,
+    ) -> Result<Self, std::io::Error> {
         // TODO: Windows
         //
         // $HOME/.local/share/wire
         let token_mapping_filepath = match token_mapping_filepath {
             Some(tp) => tp,
             None => {
+                match download {
+                    Some(false) => {
+                        info!("Skipping tokenizer file download...");
+                        return Ok(Tokenizer {
+                            ranks: HashMap::default(),
+                        });
+                    }
+                    Some(_) => {}
+                    None => {}
+                };
+
+                // TODO: Make configurable
                 let path = match std::env::var("HOME") {
                     Ok(path) => std::path::PathBuf::from(path),
                     Err(_) => panic!("Error: can't find $HOME directory"),
