@@ -6,10 +6,7 @@ use scribe::{error, info, Logger};
 
 use crate::types::*;
 
-fn build_request(
-    client: &reqwest::blocking::Client,
-    params: &RequestParams,
-) -> reqwest::blocking::RequestBuilder {
+fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::RequestBuilder {
     let body = match params.provider.as_str() {
         "openai" => serde_json::json!({
             "model": params.model,
@@ -386,52 +383,52 @@ fn connect_https(host: &str, port: u16) -> native_tls::TlsStream<std::net::TcpSt
 //
 /// Function for streaming responses from the LLM.
 /// Asynchronous by default--relies on message channels.
-pub fn prompt_stream(
-    api: API,
-    chat_history: &Vec<Message>,
-    system_prompt: &str,
-    tokenizer: &crate::tiktoken::Tokenizer,
-    tx: std::sync::mpsc::Sender<String>,
-) -> Result<(Message, Usage), std::io::Error> {
-    let params = get_params(system_prompt, api.clone(), chat_history, true);
-    let client = reqwest::blocking::Client::new();
-
-    let response = build_request(&client, &params)
-        .send()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-    let response = match api {
-        API::Anthropic(_) => process_anthropic_stream(response, tokenizer, &tx),
-        API::OpenAI(_) => process_openai_stream(response, tokenizer, &tx),
-        API::Groq(_) => process_openai_stream(response, tokenizer, &tx),
-    };
-
-    let (content, usage) = response?;
-
-    Ok((
-        Message {
-            message_type: MessageType::Assistant,
-            content,
-            api,
-            system_prompt: system_prompt.to_string(),
-        },
-        usage,
-    ))
-}
+// pub fn prompt_stream(
+//     api: API,
+//     chat_history: &Vec<Message>,
+//     system_prompt: &str,
+//     tokenizer: &crate::tiktoken::Tokenizer,
+//     tx: std::sync::mpsc::Sender<String>,
+// ) -> Result<(Message, Usage), std::io::Error> {
+//     let params = get_params(system_prompt, api.clone(), chat_history, true);
+//     let client = reqwest::blocking::Client::new();
+//
+//     let response = build_request(&client, &params)
+//         .send()
+//         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+//
+//     let response = match api {
+//         API::Anthropic(_) => process_anthropic_stream(response, tokenizer, &tx),
+//         API::OpenAI(_) => process_openai_stream(response, tokenizer, &tx),
+//         API::Groq(_) => process_openai_stream(response, tokenizer, &tx),
+//     };
+//
+//     let (content, usage) = response?;
+//
+//     Ok((
+//         Message {
+//             message_type: MessageType::Assistant,
+//             content,
+//             api,
+//             system_prompt: system_prompt.to_string(),
+//         },
+//         usage,
+//     ))
+// }
 
 /// Ad-hoc prompting for an LLM
 /// Makes zero expectations about the state of the conversation
 /// and returns a tuple of (response message, usage from the prompt)
-pub fn prompt(
+pub async fn prompt(
     api: API,
     system_prompt: &str,
     chat_history: &Vec<Message>,
 ) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
     let params = get_params(system_prompt, api.clone(), chat_history, false);
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
 
-    let response = build_request(&client, &params).send()?;
-    let response_json: serde_json::Value = response.json()?;
+    let response = build_request(&client, &params).send().await?;
+    let response_json: serde_json::Value = response.json().await?;
 
     let mut content = read_json_response(&api, &response_json);
 

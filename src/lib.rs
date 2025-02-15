@@ -42,7 +42,7 @@ impl Wire {
         })
     }
 
-    pub fn prompt(
+    pub async fn prompt(
         &mut self,
         api: API,
         system_prompt: &str,
@@ -50,7 +50,7 @@ impl Wire {
     ) -> Result<Message, Box<dyn std::error::Error>> {
         // TODO: error handling here could probably be a bit more fleshed out
         let (response, usage_delta) =
-            match network::prompt(api.clone(), system_prompt, chat_history) {
+            match network::prompt(api.clone(), system_prompt, chat_history).await {
                 Ok(r) => (r.0, r.1),
                 Err(e) => {
                     error!("error prompting LLM: {}", e);
@@ -64,33 +64,32 @@ impl Wire {
         Ok(response)
     }
 
-    // TODO: This is blocking until the `network::prompt_stream` completes
-    //       Approaches?
-    pub fn prompt_stream(
-        &mut self,
-        api: API,
-        system_prompt: &str,
-        chat_history: &Vec<Message>,
-        tx: std::sync::mpsc::Sender<String>,
-    ) -> Result<Message, std::io::Error> {
-        // TODO: remarkably stupid gymnastics with this tokenizer
-        let (response, usage_delta) = match network::prompt_stream(
-            api.clone(),
-            chat_history,
-            system_prompt,
-            &self.tokenizer,
-            tx,
-        ) {
-            Ok(r) => (r.0, r.1),
-            Err(e) => {
-                error!("error prompting LLM: {}", e);
-                return Err(e);
-            }
-        };
-
-        let usage = self.metrics.entry(api).or_insert(Usage::new());
-        usage.add(usage_delta);
-
-        Ok(response)
-    }
+    // TODO: Implement
+    // pub fn prompt_stream(
+    //     &mut self,
+    //     api: API,
+    //     system_prompt: &str,
+    //     chat_history: &Vec<Message>,
+    //     tx: std::sync::mpsc::Sender<String>,
+    // ) -> Result<Message, std::io::Error> {
+    //     // TODO: remarkably stupid gymnastics with this tokenizer
+    //     let (response, usage_delta) = match network::prompt_stream(
+    //         api.clone(),
+    //         chat_history,
+    //         system_prompt,
+    //         &self.tokenizer,
+    //         tx,
+    //     ) {
+    //         Ok(r) => (r.0, r.1),
+    //         Err(e) => {
+    //             error!("error prompting LLM: {}", e);
+    //             return Err(e);
+    //         }
+    //     };
+    //
+    //     let usage = self.metrics.entry(api).or_insert(Usage::new());
+    //     usage.add(usage_delta);
+    //
+    //     Ok(response)
+    // }
 }
