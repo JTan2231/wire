@@ -356,7 +356,7 @@ fn process_anthropic_stream(
 /// maybe something like getting usage metrics out of this
 fn read_json_response(api: &API, response_json: &serde_json::Value) -> String {
     match api {
-        API::Anthropic(_) => response_json["choices"][0]["message"]["content"].to_string(),
+        API::Anthropic(_) => response_json["content"][0]["text"].to_string(),
         API::OpenAI(_) => response_json["choices"][0]["message"]["content"].to_string(),
         API::Groq(_) => response_json["content"][0]["text"].to_string(),
         // TODO: gemini
@@ -428,7 +428,9 @@ pub async fn prompt(
     let client = reqwest::Client::new();
 
     let response = build_request(&client, &params).send().await?;
-    let response_json: serde_json::Value = response.json().await?;
+    // NOTE: I guess anthropic's response doesn't work with `.json()`?
+    let body = response.text().await?;
+    let response_json: serde_json::Value = serde_json::from_str(&body)?;
 
     let mut content = read_json_response(&api, &response_json);
 
