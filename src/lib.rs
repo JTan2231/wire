@@ -64,6 +64,10 @@ impl Wire {
         Ok(response)
     }
 
+    pub fn count_tokens(&self, message: &str) -> usize {
+        self.tokenizer.encode(message).len()
+    }
+
     // TODO: Implement
     // pub fn prompt_stream(
     //     &mut self,
