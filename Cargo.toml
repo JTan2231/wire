@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.22.1"
-bstr = "1.11.3"
+bstr = "1.11.1"
 fancy-regex = "0.14.0"
 native-tls = "0.2.12"
 reqwest = { version = "0.12.11", features = ["blocking", "json"] }
