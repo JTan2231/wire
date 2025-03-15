@@ -26,7 +26,7 @@ impl Tokenizer {
     // TODO: tokenizer file management
     //
     // NOTE: only supports the GPT-4o token mappings--this is probably a TODO
-    pub fn new(
+    pub async fn new(
         token_mapping_filepath: Option<std::path::PathBuf>,
         download: Option<bool>,
     ) -> Result<Self, std::io::Error> {
@@ -71,7 +71,7 @@ impl Tokenizer {
                         "Can't find the token mapping file, downloading from {}",
                         TOKEN_MAPPING_URL
                     );
-                    let response = match reqwest::blocking::get(TOKEN_MAPPING_URL) {
+                    let response = match reqwest::get(TOKEN_MAPPING_URL).await {
                         Ok(r) => r,
                         Err(e) => {
                             // TODO: william should be able to run without a tokenizer
@@ -79,7 +79,7 @@ impl Tokenizer {
                         }
                     };
 
-                    let bytes = response.bytes().unwrap();
+                    let bytes = response.bytes().await.unwrap();
                     println!("Token mapping downloaded");
 
                     let mut file = std::fs::File::create(token_mapping_filepath)?;

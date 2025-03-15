@@ -25,11 +25,11 @@ pub struct Wire {
 }
 
 impl Wire {
-    pub fn new(
+    pub async fn new(
         tokenizer_path: Option<std::path::PathBuf>,
         download: Option<bool>,
     ) -> Result<Self, std::io::Error> {
-        let tokenizer = match tiktoken::Tokenizer::new(tokenizer_path.clone(), download) {
+        let tokenizer = match tiktoken::Tokenizer::new(tokenizer_path.clone(), download).await {
             Ok(t) => t,
             Err(e) => {
                 panic!("error reading tokenizer file {:?}: {}", tokenizer_path, e);
