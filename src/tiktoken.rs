@@ -189,6 +189,7 @@ fn _byte_pair_merge(ranks: &HashMap<Vec<u8>, Rank>, piece: &[u8]) -> Vec<(usize,
             }
         }
     }
+
     parts
 }
 

@@ -220,15 +220,6 @@ fn get_params(
     }
 }
 
-fn send_delta(tx: &std::sync::mpsc::Sender<String>, delta: String) {
-    match tx.send(delta.clone()) {
-        Ok(_) => {}
-        Err(e) => {
-            error!("error sending transmission error string: {}", e);
-        }
-    };
-}
-
 fn unescape(content: &str) -> String {
     content
         .replace("\\n", "\n")
@@ -429,6 +420,45 @@ pub async fn prompt(
 
     let response = build_request(&client, &params).send().await?;
     // NOTE: I guess anthropic's response doesn't work with `.json()`?
+    let body = response.text().await?;
+    let response_json: serde_json::Value = serde_json::from_str(&body)?;
+
+    let mut content = read_json_response(&api, &response_json);
+
+    content = unescape(&content);
+    if content.starts_with("\"") && content.ends_with("\"") {
+        content = content[1..content.len() - 1].to_string();
+    }
+
+    Ok((
+        Message {
+            message_type: MessageType::Assistant,
+            content,
+            api,
+            system_prompt: system_prompt.to_string(),
+        },
+        Usage {
+            tokens_in: 0,
+            tokens_out: 0,
+        },
+    ))
+}
+
+/// The same as `prompt`, but for hitting a local endpoint
+/// NOTE: This _always_ assumes that the endpoint matches OpenAI's API specification
+pub async fn prompt_local(
+    host: &str,
+    port: u16,
+    api: API,
+    system_prompt: &str,
+    chat_history: &Vec<Message>,
+) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
+    let params =
+        get_openai_request_params(system_prompt.to_string(), api.clone(), chat_history, false);
+
+    let client = reqwest::Client::new();
+
+    let response = build_request(&client, &params).send().await?;
     let body = response.text().await?;
     let response_json: serde_json::Value = serde_json::from_str(&body)?;
 

@@ -22,12 +22,22 @@ use crate::types::{Message, Usage, API};
 pub struct Wire {
     tokenizer: tiktoken::Tokenizer,
     metrics: HashMap<API, Usage>,
+    local_url: Option<String>,
 }
 
 impl Wire {
+    /// Create a new wire
+    /// Parameters:
+    /// - `tokenizer_path` -- Filepath to an existing tokenizer file
+    /// - `download`       -- Optional boolean deciding whether to download a tokenizer file (OAI 400k by default)
+    ///                       if it doesn't already exist
+    /// - `local_url`      -- Optional URL pointing to a custom endpoint matching the OpenAI API
+    ///                       specification. It _must_ match the pattern of
+    ///                       `<protocol>://<address>:<port>`
     pub async fn new(
         tokenizer_path: Option<std::path::PathBuf>,
         download: Option<bool>,
+        local_url: Option<String>,
     ) -> Result<Self, std::io::Error> {
         let tokenizer = match tiktoken::Tokenizer::new(tokenizer_path.clone(), download).await {
             Ok(t) => t,
@@ -39,6 +49,7 @@ impl Wire {
         Ok(Self {
             tokenizer,
             metrics: HashMap::new(),
+            local_url,
         })
     }
 
@@ -49,14 +60,33 @@ impl Wire {
         chat_history: &Vec<Message>,
     ) -> Result<Message, Box<dyn std::error::Error>> {
         // TODO: error handling here could probably be a bit more fleshed out
-        let (response, usage_delta) =
+        let (response, usage_delta) = if let Some(url) = &self.local_url {
+            let without_protocol = url.split("://").nth(1).unwrap_or(url);
+
+            let parts: Vec<&str> = without_protocol.split(':').collect();
+            let host = parts[0];
+            let port = parts
+                .get(1)
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(80);
+
+            match network::prompt_local(host, port, api.clone(), system_prompt, chat_history).await
+            {
+                Ok(r) => (r.0, r.1),
+                Err(e) => {
+                    error!("error prompting LLM: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
             match network::prompt(api.clone(), system_prompt, chat_history).await {
                 Ok(r) => (r.0, r.1),
                 Err(e) => {
                     error!("error prompting LLM: {}", e);
                     return Err(e);
                 }
-            };
+            }
+        };
 
         let usage = self.metrics.entry(api).or_insert(Usage::new());
         usage.add(usage_delta);
@@ -68,32 +98,5 @@ impl Wire {
         self.tokenizer.encode(message).len()
     }
 
-    // TODO: Implement
-    // pub fn prompt_stream(
-    //     &mut self,
-    //     api: API,
-    //     system_prompt: &str,
-    //     chat_history: &Vec<Message>,
-    //     tx: std::sync::mpsc::Sender<String>,
-    // ) -> Result<Message, std::io::Error> {
-    //     // TODO: remarkably stupid gymnastics with this tokenizer
-    //     let (response, usage_delta) = match network::prompt_stream(
-    //         api.clone(),
-    //         chat_history,
-    //         system_prompt,
-    //         &self.tokenizer,
-    //         tx,
-    //     ) {
-    //         Ok(r) => (r.0, r.1),
-    //         Err(e) => {
-    //             error!("error prompting LLM: {}", e);
-    //             return Err(e);
-    //         }
-    //     };
-    //
-    //     let usage = self.metrics.entry(api).or_insert(Usage::new());
-    //     usage.add(usage_delta);
-    //
-    //     Ok(response)
-    // }
+    // TODO: Implement streaming
 }
