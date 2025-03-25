@@ -88,8 +88,6 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
         _ => panic!("Invalid provider: {}", params.provider),
     }
 
-    println!("request: {:?}", request);
-
     request
 }
 
