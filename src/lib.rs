@@ -2,7 +2,6 @@ mod network;
 mod tiktoken;
 pub mod types;
 
-use scribe::{error, Logger};
 use std::collections::HashMap;
 
 use crate::types::{Message, Usage, API};
@@ -25,6 +24,7 @@ pub struct Wire {
     local_url: Option<String>,
 }
 
+// TODO: Actually properly pass error messages up
 impl Wire {
     /// Create a new wire
     /// Parameters:
@@ -74,7 +74,7 @@ impl Wire {
             {
                 Ok(r) => (r.0, r.1),
                 Err(e) => {
-                    error!("error prompting LLM: {}", e);
+                    println!("error prompting LLM: {}", e);
                     return Err(e);
                 }
             }
@@ -82,7 +82,7 @@ impl Wire {
             match network::prompt(api.clone(), system_prompt, chat_history).await {
                 Ok(r) => (r.0, r.1),
                 Err(e) => {
-                    error!("error prompting LLM: {}", e);
+                    println!("error prompting LLM: {}", e);
                     return Err(e);
                 }
             }

@@ -1,8 +1,5 @@
 use std::env;
-use std::io::BufRead;
 use std::net::{TcpStream, ToSocketAddrs};
-
-use scribe::{error, info, Logger};
 
 use crate::types::*;
 
@@ -64,7 +61,11 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
         _ => panic!("Invalid provider for request_body: {}", params.provider),
     };
 
-    let url = format!("https://{}:{}{}", params.host, params.port, params.path);
+    let url = if params.host == "localhost" {
+        format!("http://{}:{}{}", params.host, params.port, params.path)
+    } else {
+        format!("https://{}:{}{}", params.host, params.port, params.path)
+    };
     let mut request = client.post(url.clone()).json(&body);
 
     match params.provider.as_str() {
@@ -86,6 +87,8 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
         }
         _ => panic!("Invalid provider: {}", params.provider),
     }
+
+    println!("request: {:?}", request);
 
     request
 }
@@ -342,8 +345,14 @@ pub async fn prompt_local(
     system_prompt: &str,
     chat_history: &Vec<Message>,
 ) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
-    let params =
+    let mut params =
         get_openai_request_params(system_prompt.to_string(), api.clone(), chat_history, false);
+
+    // Overriding these with mock parameters
+    params.host = host.to_string();
+    params.port = port;
+    params.max_tokens = Some(0);
+    params.system_prompt = Some(system_prompt.to_string());
 
     let client = reqwest::Client::new();
 

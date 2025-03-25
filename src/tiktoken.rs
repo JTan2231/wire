@@ -8,7 +8,6 @@ use std::thread;
 
 use fancy_regex::Regex;
 use rustc_hash::FxHashMap as HashMap;
-use scribe::{info, Logger};
 
 type Rank = u32;
 
@@ -38,7 +37,7 @@ impl Tokenizer {
             None => {
                 match download {
                     Some(false) => {
-                        info!("Skipping tokenizer file download...");
+                        println!("Skipping tokenizer file download...");
                         return Ok(Tokenizer {
                             ranks: HashMap::default(),
                         });
