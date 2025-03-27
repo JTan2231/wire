@@ -24,6 +24,8 @@ pub enum API {
     Groq(GroqModel),
     #[serde(rename = "anthropic")]
     Anthropic(AnthropicModel),
+    #[serde(rename = "gemini")]
+    Gemini(GeminiModel),
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -58,6 +60,18 @@ pub enum AnthropicModel {
     Claude35Haiku,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum GeminiModel {
+    #[serde(rename = "gemini-2.5-pro-exp-03-25")]
+    Gemini25ProExp,
+    #[serde(rename = "gemini-2.0-flash")]
+    Gemini20Flash,
+    #[serde(rename = "gemini-2.0-flash-lite")]
+    Gemini20FlashLite,
+    #[serde(rename = "gemini-embedding-exp")]
+    GeminiEmbedding,
+}
+
 impl API {
     pub fn from_strings(provider: &str, model: &str) -> Result<Self, String> {
         match provider {
@@ -89,6 +103,16 @@ impl API {
                 };
                 Ok(API::Anthropic(model))
             }
+            "gemini" => {
+                let model = match model {
+                    "gemini-2.5-pro-exp-03-25" => GeminiModel::Gemini25ProExp,
+                    "gemini-2.0-flash" => GeminiModel::Gemini20Flash,
+                    "gemini-2.0-flash-lite" => GeminiModel::Gemini20FlashLite,
+                    "gemini-embedding-exp" => GeminiModel::GeminiEmbedding,
+                    _ => return Err(format!("Unknown Gemini model: {}", model)),
+                };
+                Ok(API::Gemini(model))
+            }
             _ => Err(format!("Unknown provider: {}", provider)),
         }
     }
@@ -119,6 +143,15 @@ impl API {
                     AnthropicModel::Claude35Haiku => "claude-3-5-haiku-latest",
                 };
                 ("anthropic".to_string(), model_str.to_string())
+            }
+            API::Gemini(model) => {
+                let model_str = match model {
+                    GeminiModel::Gemini25ProExp => "gemini-2.5-pro-exp-03-25",
+                    GeminiModel::Gemini20Flash => "gemini-2.0-flash",
+                    GeminiModel::Gemini20FlashLite => "gemini-2.0-flash-lite",
+                    GeminiModel::GeminiEmbedding => "gemini-embedding-exp",
+                };
+                ("gemini".to_string(), model_str.to_string())
             }
         }
     }
