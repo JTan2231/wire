@@ -236,12 +236,38 @@ fn unescape(content: &str) -> String {
 /// JSON response handler for `prompt`
 /// Ideally I think there should be more done here,
 /// maybe something like getting usage metrics out of this
-fn read_json_response(api: &API, response_json: &serde_json::Value) -> String {
+fn read_json_response(
+    api: &API,
+    response_json: &serde_json::Value,
+) -> Result<String, Box<dyn std::error::Error>> {
     match api {
-        API::Anthropic(_) => response_json["content"][0]["text"].to_string(),
-        API::OpenAI(_) => response_json["choices"][0]["message"]["content"].to_string(),
-        API::Groq(_) => response_json["content"][0]["text"].to_string(),
-        API::Gemini(_) => response_json["candidates"][0]["content"]["parts"][0]["text"].to_string(),
+        API::Anthropic(_) | API::Groq(_) => response_json
+            .get("content")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing 'content[0].text'".into()),
+
+        API::OpenAI(_) => response_json
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing 'choices[0].message.content'".into()),
+
+        API::Gemini(_) => response_json
+            .get("candidates")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.get("parts"))
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing 'candidates[0].content.parts[0].text'".into()),
     }
 }
 
@@ -298,7 +324,7 @@ pub async fn prompt(
     let body = response.text().await?;
     let response_json: serde_json::Value = serde_json::from_str(&body)?;
 
-    let mut content = read_json_response(&api, &response_json);
+    let mut content = read_json_response(&api, &response_json)?;
 
     content = unescape(&content);
     if content.starts_with("\"") && content.ends_with("\"") {
@@ -343,7 +369,7 @@ pub async fn prompt_local(
     let body = response.text().await?;
     let response_json: serde_json::Value = serde_json::from_str(&body)?;
 
-    let mut content = read_json_response(&api, &response_json);
+    let mut content = read_json_response(&api, &response_json)?;
 
     content = unescape(&content);
     if content.starts_with("\"") && content.ends_with("\"") {
@@ -604,7 +630,7 @@ mod tests {
             }]
         });
 
-        let result = read_json_response(&api, &response);
+        let result = read_json_response(&api, &response).unwrap();
         assert_eq!(result, "\"test response\"");
     }
 
