@@ -1,4 +1,7 @@
+use native_tls::TlsStream;
 use std::env;
+use std::io::{BufRead, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 
 use crate::types::*;
 
@@ -88,6 +91,114 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
     }
 
     request
+}
+
+// This is really just for streaming since SSE isn't really well supported with reqwest
+fn build_request_raw(params: &RequestParams) -> String {
+    let body = match params.provider.as_str() {
+        "openai" => serde_json::json!({
+            "model": params.model,
+            "messages": params.messages.iter()
+                .map(|message| {
+                    serde_json::json!({
+                        "role": message.message_type.to_string(),
+                        "content": message.content
+                    })
+                }).collect::<Vec<serde_json::Value>>(),
+            "stream": params.stream,
+        }),
+        "groq" => serde_json::json!({
+            "model": params.model,
+            "messages": params.messages.iter()
+                .map(|message| {
+                    serde_json::json!({
+                        "role": message.message_type.to_string(),
+                        "content": message.content
+                    })
+                }).collect::<Vec<serde_json::Value>>(),
+            "stream": params.stream,
+        }),
+        "anthropic" => serde_json::json!({
+            "model": params.model,
+            "messages": params.messages.iter().map(|message| {
+                serde_json::json!({
+                    "role": message.message_type.to_string(),
+                    "content": message.content
+                })
+            }).collect::<Vec<serde_json::Value>>(),
+            "stream": params.stream,
+            "max_tokens": params.max_tokens.unwrap(),
+            "system": params.system_prompt.clone().unwrap(),
+        }),
+        "gemini" => serde_json::json!({
+            "contents": params.messages.iter().map(|m| {
+                serde_json::json!({
+                    "parts": [{
+                        "text": m.content
+                    }],
+                    "role": match m.message_type {
+                        MessageType::User => "user",
+                        MessageType::Assistant => "model",
+                        _ => panic!("what is happening")
+                    }
+                })
+            }).collect::<Vec<_>>(),
+            "systemInstruction": {
+                "parts": [{
+                    "text": params.system_prompt,
+                }]
+            }
+        }),
+        _ => panic!("Invalid provider for request_body: {}", params.provider),
+    };
+
+    let json = serde_json::json!(body);
+    let json_string = serde_json::to_string(&json).expect("Failed to serialize JSON");
+
+    let (auth_string, api_version, path) = match params.provider.as_str() {
+        "openai" => (
+            format!("Authorization: Bearer {}\r\n", params.authorization_token),
+            "\r\n".to_string(),
+            params.path.clone(),
+        ),
+        "groq" => (
+            format!("Authorization: Bearer {}\r\n", params.authorization_token),
+            "\r\n".to_string(),
+            params.path.clone(),
+        ),
+        "anthropic" => (
+            format!("x-api-key: {}\r\n", params.authorization_token),
+            "anthropic-version: 2023-06-01\r\n\r\n".to_string(),
+            params.path.clone(),
+        ),
+        "gemini" => (
+            "\r\n".to_string(),
+            "\r\n".to_string(),
+            format!("{}?key={}", params.path, params.authorization_token),
+        ),
+        _ => panic!("Invalid provider: {}", params.provider),
+    };
+
+    format!(
+        "POST {} HTTP/1.1\r\n\
+        Host: {}\r\n\
+        Content-Type: application/json\r\n\
+        Content-Length: {}\r\n\
+        Accept: */*\r\n\
+        {}\
+        {}\
+        {}",
+        path,
+        params.host,
+        json_string.len(),
+        auth_string,
+        if api_version == "\r\n" && auth_string == "\r\n" {
+            String::new()
+        } else {
+            api_version
+        },
+        json_string.trim()
+    )
 }
 
 fn get_openai_request_params(
@@ -271,42 +382,155 @@ fn read_json_response(
     }
 }
 
-// TODO: I'm wondering if it's even worth making a synchronous version
-//
+fn send_delta(
+    tx: &std::sync::mpsc::Sender<String>,
+    delta: String,
+) -> Result<(), std::sync::mpsc::SendError<String>> {
+    match tx.send(delta.clone()) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn process_openai_stream(
+    stream: TlsStream<TcpStream>,
+    tx: &std::sync::mpsc::Sender<String>,
+) -> Result<String, std::io::Error> {
+    let reader = std::io::BufReader::new(stream);
+    let mut full_message = String::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if !line.starts_with("data: ") {
+            continue;
+        }
+
+        let payload = line[6..].trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            break;
+        }
+
+        let response_json: serde_json::Value = match serde_json::from_str(&payload) {
+            Ok(json) => json,
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                ));
+            }
+        };
+
+        let mut delta = unescape(&response_json["choices"][0]["delta"]["content"].to_string());
+        if delta != "null" {
+            delta = delta[1..delta.len() - 1].to_string();
+            let _ = send_delta(&tx, delta.clone());
+
+            full_message.push_str(&delta);
+        }
+    }
+
+    // TODO: actually calculate the usage, obviously
+    Ok(full_message)
+}
+
+fn process_anthropic_stream(
+    stream: TlsStream<TcpStream>,
+    tx: &std::sync::mpsc::Sender<String>,
+) -> Result<String, std::io::Error> {
+    let reader = std::io::BufReader::new(stream);
+    let mut full_message = String::new();
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if line.starts_with("event: message_stop") {
+            break;
+        }
+
+        if !line.starts_with("data: ") {
+            continue;
+        }
+
+        let payload = line[6..].trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            break;
+        }
+
+        let response_json: serde_json::Value = match serde_json::from_str(&payload) {
+            Ok(json) => json,
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                ));
+            }
+        };
+
+        let mut delta = "null".to_string();
+        if response_json["type"] == "content_block_delta" {
+            delta = unescape(&response_json["delta"]["text"].to_string());
+            // Trim quotes from delta
+            delta = delta[1..delta.len() - 1].to_string();
+        }
+
+        if delta != "null" {
+            let _ = send_delta(&tx, delta.clone());
+            full_message.push_str(&delta);
+        }
+    }
+
+    Ok(full_message)
+}
+
+fn connect_https(host: &str, port: u16) -> native_tls::TlsStream<std::net::TcpStream> {
+    let addr = (host, port)
+        .to_socket_addrs()
+        .unwrap()
+        .find(|addr| addr.is_ipv4())
+        .expect("No IPv4 address found");
+
+    let stream = TcpStream::connect(&addr).unwrap();
+
+    let connector = native_tls::TlsConnector::new().expect("TLS connector failed to create");
+
+    connector.connect(host, stream).unwrap()
+}
+
 /// Function for streaming responses from the LLM.
-/// Asynchronous by default--relies on message channels.
-// pub fn prompt_stream(
-//     api: API,
-//     chat_history: &Vec<Message>,
-//     system_prompt: &str,
-//     tokenizer: &crate::tiktoken::Tokenizer,
-//     tx: std::sync::mpsc::Sender<String>,
-// ) -> Result<(Message, Usage), std::io::Error> {
-//     let params = get_params(system_prompt, api.clone(), chat_history, true);
-//     let client = reqwest::blocking::Client::new();
-//
-//     let response = build_request(&client, &params)
-//         .send()
-//         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-//
-//     let response = match api {
-//         API::Anthropic(_) => process_anthropic_stream(response, tokenizer, &tx),
-//         API::OpenAI(_) => process_openai_stream(response, tokenizer, &tx),
-//         API::Groq(_) => process_openai_stream(response, tokenizer, &tx),
-//     };
-//
-//     let (content, usage) = response?;
-//
-//     Ok((
-//         Message {
-//             message_type: MessageType::Assistant,
-//             content,
-//             api,
-//             system_prompt: system_prompt.to_string(),
-//         },
-//         usage,
-//     ))
-// }
+/// Decoded tokens are sent through the given sender.
+pub fn prompt_stream(
+    api: API,
+    chat_history: &Vec<Message>,
+    system_prompt: &str,
+    tx: std::sync::mpsc::Sender<String>,
+) -> Result<Message, Box<dyn std::error::Error>> {
+    let params = get_params(system_prompt, api.clone(), chat_history, true);
+    let request = build_request_raw(&params);
+
+    let mut stream = connect_https(&params.host, params.port);
+    stream
+        .write_all(request.as_bytes())
+        .expect("Failed to write to stream");
+    stream.flush().expect("Failed to flush stream");
+
+    let response = match api {
+        API::Anthropic(_) => process_anthropic_stream(stream, &tx),
+        API::OpenAI(_) => process_openai_stream(stream, &tx),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Unsupported API provider",
+        )),
+    };
+
+    let content = response?;
+
+    Ok(Message {
+        message_type: MessageType::Assistant,
+        content,
+        api,
+        system_prompt: system_prompt.to_string(),
+    })
+}
 
 /// Ad-hoc prompting for an LLM
 /// Makes zero expectations about the state of the conversation

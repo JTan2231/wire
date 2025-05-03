@@ -53,6 +53,7 @@ impl Wire {
         })
     }
 
+    // TODO: Deprecate the tokenizer/usage nonsense
     pub async fn prompt(
         &mut self,
         api: API,
@@ -60,7 +61,7 @@ impl Wire {
         chat_history: &Vec<Message>,
     ) -> Result<Message, Box<dyn std::error::Error>> {
         // TODO: error handling here could probably be a bit more fleshed out
-        let (response, usage_delta) = if let Some(url) = &self.local_url {
+        let (response, _) = if let Some(url) = &self.local_url {
             let without_protocol = url.split("://").nth(1).unwrap_or(url);
 
             let parts: Vec<&str> = without_protocol.split(':').collect();
@@ -88,8 +89,23 @@ impl Wire {
             }
         };
 
-        let usage = self.metrics.entry(api).or_insert(Usage::new());
-        usage.add(usage_delta);
+        Ok(response)
+    }
+
+    // TODO: Support for locally hosted models
+    pub fn prompt_stream(
+        &self,
+        api: API,
+        system_prompt: &str,
+        chat_history: &Vec<Message>,
+        tx: std::sync::mpsc::Sender<String>,
+    ) -> Result<Message, Box<dyn std::error::Error>> {
+        let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(e);
+            }
+        };
 
         Ok(response)
     }
@@ -97,6 +113,22 @@ impl Wire {
     pub fn count_tokens(&self, message: &str) -> usize {
         self.tokenizer.encode(message).len()
     }
+}
 
-    // TODO: Implement streaming
+// TODO: Filthy workaround
+pub fn prompt_stream(
+    api: API,
+    system_prompt: &str,
+    chat_history: &Vec<Message>,
+    tx: std::sync::mpsc::Sender<String>,
+) -> Result<Message, Box<dyn std::error::Error>> {
+    let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("ERROR: {}", e);
+            return Err(e);
+        }
+    };
+
+    Ok(response)
 }
