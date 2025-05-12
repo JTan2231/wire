@@ -19,7 +19,6 @@ use crate::types::{Message, Usage, API};
 ///
 /// Metrics are tracked per API.
 pub struct Wire {
-    tokenizer: tiktoken::Tokenizer,
     metrics: HashMap<API, Usage>,
     local_url: Option<String>,
 }
@@ -34,20 +33,8 @@ impl Wire {
     /// - `local_url`      -- Optional URL pointing to a custom endpoint matching the OpenAI API
     ///                       specification. It _must_ match the pattern of
     ///                       `<protocol>://<address>:<port>`
-    pub async fn new(
-        tokenizer_path: Option<std::path::PathBuf>,
-        download: Option<bool>,
-        local_url: Option<String>,
-    ) -> Result<Self, std::io::Error> {
-        let tokenizer = match tiktoken::Tokenizer::new(tokenizer_path.clone(), download).await {
-            Ok(t) => t,
-            Err(e) => {
-                panic!("error reading tokenizer file {:?}: {}", tokenizer_path, e);
-            }
-        };
-
+    pub async fn new(local_url: Option<String>) -> Result<Self, std::io::Error> {
         Ok(Self {
-            tokenizer,
             metrics: HashMap::new(),
             local_url,
         })
@@ -92,10 +79,6 @@ impl Wire {
         usage.add(usage_delta);
 
         Ok(response)
-    }
-
-    pub fn count_tokens(&self, message: &str) -> usize {
-        self.tokenizer.encode(message).len()
     }
 
     // TODO: Implement streaming
