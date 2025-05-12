@@ -19,7 +19,6 @@ use crate::types::{Message, Usage, API};
 ///
 /// Metrics are tracked per API.
 pub struct Wire {
-    metrics: HashMap<API, Usage>,
     local_url: Option<String>,
 }
 
@@ -34,12 +33,10 @@ impl Wire {
     ///                       specification. It _must_ match the pattern of
     ///                       `<protocol>://<address>:<port>`
     pub async fn new(local_url: Option<String>) -> Result<Self, std::io::Error> {
-        Ok(Self {
-            metrics: HashMap::new(),
-            local_url,
-        })
+        Ok(Self { local_url })
     }
 
+    // TODO: Deprecate the tokenizer/usage nonsense
     pub async fn prompt(
         &mut self,
         api: API,
@@ -47,7 +44,7 @@ impl Wire {
         chat_history: &Vec<Message>,
     ) -> Result<Message, Box<dyn std::error::Error>> {
         // TODO: error handling here could probably be a bit more fleshed out
-        let (response, usage_delta) = if let Some(url) = &self.local_url {
+        let (response, _) = if let Some(url) = &self.local_url {
             let without_protocol = url.split("://").nth(1).unwrap_or(url);
 
             let parts: Vec<&str> = without_protocol.split(':').collect();
@@ -75,11 +72,41 @@ impl Wire {
             }
         };
 
-        let usage = self.metrics.entry(api).or_insert(Usage::new());
-        usage.add(usage_delta);
-
         Ok(response)
     }
 
-    // TODO: Implement streaming
+    // TODO: Support for locally hosted models
+    pub fn prompt_stream(
+        api: API,
+        system_prompt: &str,
+        chat_history: &Vec<Message>,
+        tx: std::sync::mpsc::Sender<String>,
+    ) -> Result<Message, Box<dyn std::error::Error>> {
+        let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(e);
+            }
+        };
+
+        Ok(response)
+    }
+}
+
+// TODO: Filthy workaround
+pub fn prompt_stream(
+    api: API,
+    system_prompt: &str,
+    chat_history: &Vec<Message>,
+    tx: std::sync::mpsc::Sender<String>,
+) -> Result<Message, Box<dyn std::error::Error>> {
+    let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("ERROR: {}", e);
+            return Err(e);
+        }
+    };
+
+    Ok(response)
 }
