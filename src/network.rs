@@ -1,6 +1,6 @@
 use native_tls::TlsStream;
 use std::env;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 
 use crate::types::*;
@@ -179,7 +179,7 @@ fn build_request_raw(params: &RequestParams) -> String {
         _ => panic!("Invalid provider: {}", params.provider),
     };
 
-    format!(
+    let request = format!(
         "POST {} HTTP/1.1\r\n\
         Host: {}\r\n\
         Content-Type: application/json\r\n\
@@ -198,7 +198,9 @@ fn build_request_raw(params: &RequestParams) -> String {
             api_version
         },
         json_string.trim()
-    )
+    );
+
+    request
 }
 
 fn get_openai_request_params(
@@ -296,7 +298,15 @@ fn get_gemini_request_params(
     RequestParams {
         provider,
         host: "generativelanguage.googleapis.com".to_string(),
-        path: format!("/v1beta/models/{}:generateContent", api.to_strings().1),
+        path: format!(
+            "/v1beta/models/{}:{}",
+            api.to_strings().1,
+            if stream {
+                "streamGenerateContent"
+            } else {
+                "generateContent"
+            }
+        ),
         port: 443,
         messages: chat_history.iter().cloned().collect::<Vec<Message>>(),
         model,
@@ -429,7 +439,6 @@ fn process_openai_stream(
         }
     }
 
-    // TODO: actually calculate the usage, obviously
     Ok(full_message)
 }
 
@@ -482,6 +491,89 @@ fn process_anthropic_stream(
     Ok(full_message)
 }
 
+fn process_gemini_stream(
+    stream: TlsStream<TcpStream>,
+    tx: &std::sync::mpsc::Sender<String>,
+) -> Result<String, std::io::Error> {
+    let mut reader = std::io::BufReader::new(stream);
+    let mut accumulated_text = String::new();
+    let mut line = String::new();
+
+    // TODO: Allocation hell
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+
+        let line = line.trim();
+        if line.is_empty() || line == "," {
+            continue;
+        }
+
+        let size = match i64::from_str_radix(line, 16) {
+            Ok(size) => size,
+            Err(_) => {
+                continue;
+            }
+        };
+
+        let mut buffer = vec![0; size as usize];
+        reader.read_exact(&mut buffer)?;
+
+        // There are 2 cases:
+        // - It's the first chunk
+        //   - The chunk will start with `[` to mark the beginning of the chunk array
+        // - It's a chunk in (1, n]
+        //   - The chunk will start with `,\r\n`
+
+        // TODO: Do something with these panics
+        let chunk = match String::from_utf8(buffer) {
+            Ok(c) => c,
+            Err(e) => {
+                panic!("Error: non-UTF8 in Gemini response! {}", e);
+            }
+        }
+        .trim()
+        .to_string();
+
+        // Final chunk
+        if chunk == "]" {
+            break;
+        }
+
+        let chunk = {
+            // First chunk
+            if chunk.starts_with("[") {
+                &chunk[1..]
+            }
+            // Middle chunk
+            else if chunk.starts_with(",\r\n") {
+                &chunk[3..]
+            } else {
+                panic!("Error: unexpected chunk format: {}", chunk);
+            }
+        };
+
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(chunk) {
+            if let Some(text) = json["candidates"][0]["content"]["parts"][0]["text"].as_str() {
+                accumulated_text.push_str(text);
+                tx.send(text.to_string()).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to send through channel: {}", e),
+                    )
+                })?;
+            }
+        }
+
+        let mut newline = String::new();
+        reader.read_line(&mut newline)?;
+    }
+
+    Ok(accumulated_text)
+}
+
 fn connect_https(host: &str, port: u16) -> native_tls::TlsStream<std::net::TcpStream> {
     let addr = (host, port)
         .to_socket_addrs()
@@ -516,6 +608,7 @@ pub fn prompt_stream(
     let response = match api {
         API::Anthropic(_) => process_anthropic_stream(stream, &tx),
         API::OpenAI(_) => process_openai_stream(stream, &tx),
+        API::Gemini(_) => process_gemini_stream(stream, &tx),
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "Unsupported API provider",
@@ -546,6 +639,7 @@ pub async fn prompt(
     let response = build_request(&client, &params).send().await?;
     // NOTE: I guess anthropic's response doesn't work with `.json()`?
     let body = response.text().await?;
+
     let response_json: serde_json::Value = serde_json::from_str(&body)?;
 
     let mut content = read_json_response(&api, &response_json)?;

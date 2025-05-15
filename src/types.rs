@@ -62,7 +62,7 @@ pub enum AnthropicModel {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GeminiModel {
-    #[serde(rename = "gemini-2.5-pro-exp-03-25")]
+    #[serde(rename = "gemini-2.5-flash-preview-04-17")]
     Gemini25ProExp,
     #[serde(rename = "gemini-2.0-flash")]
     Gemini20Flash,
@@ -105,7 +105,7 @@ impl API {
             }
             "gemini" => {
                 let model = match model {
-                    "gemini-2.5-pro-exp-03-25" => GeminiModel::Gemini25ProExp,
+                    "gemini-2.5-flash-preview-04-17" => GeminiModel::Gemini25ProExp,
                     "gemini-2.0-flash" => GeminiModel::Gemini20Flash,
                     "gemini-2.0-flash-lite" => GeminiModel::Gemini20FlashLite,
                     "gemini-embedding-exp" => GeminiModel::GeminiEmbedding,
@@ -146,7 +146,7 @@ impl API {
             }
             API::Gemini(model) => {
                 let model_str = match model {
-                    GeminiModel::Gemini25ProExp => "gemini-2.5-pro-exp-03-25",
+                    GeminiModel::Gemini25ProExp => "gemini-2.5-flash-preview-04-17",
                     GeminiModel::Gemini20Flash => "gemini-2.0-flash",
                     GeminiModel::Gemini20FlashLite => "gemini-2.0-flash-lite",
                     GeminiModel::GeminiEmbedding => "gemini-embedding-exp",
