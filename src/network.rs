@@ -46,15 +46,10 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
                 serde_json::json!({
                     "parts": [{
                         "text": m.content
-                    }],
-                    "role": match m.message_type {
-                        MessageType::User => "user",
-                        MessageType::Assistant => "model",
-                        _ => panic!("what is happening")
-                    }
+                    }]
                 })
             }).collect::<Vec<_>>(),
-            "systemInstruction": {
+            "system_instruction": {
                 "parts": [{
                     "text": params.system_prompt,
                 }]
@@ -135,15 +130,10 @@ fn build_request_raw(params: &RequestParams) -> String {
                 serde_json::json!({
                     "parts": [{
                         "text": m.content
-                    }],
-                    "role": match m.message_type {
-                        MessageType::User => "user",
-                        MessageType::Assistant => "model",
-                        _ => panic!("what is happening")
-                    }
+                    }]
                 })
             }).collect::<Vec<_>>(),
-            "systemInstruction": {
+            "system_instruction": {
                 "parts": [{
                     "text": params.system_prompt,
                 }]
