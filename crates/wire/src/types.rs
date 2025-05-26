@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MessageType {
     System,
@@ -20,8 +22,6 @@ impl MessageType {
 pub enum API {
     #[serde(rename = "openai")]
     OpenAI(OpenAIModel),
-    #[serde(rename = "groq")]
-    Groq(GroqModel),
     #[serde(rename = "anthropic")]
     Anthropic(AnthropicModel),
     #[serde(rename = "gemini")]
@@ -38,12 +38,6 @@ pub enum OpenAIModel {
     O1Preview,
     #[serde(rename = "o1-mini")]
     O1Mini,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum GroqModel {
-    #[serde(rename = "llama3-70b-8192")]
-    LLaMA70B,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -85,13 +79,6 @@ impl API {
                 };
                 Ok(API::OpenAI(model))
             }
-            "groq" => {
-                let model = match model {
-                    "llama3-70b-8192" => GroqModel::LLaMA70B,
-                    _ => return Err(format!("Unknown Groq model: {}", model)),
-                };
-                Ok(API::Groq(model))
-            }
             "anthropic" => {
                 let model = match model {
                     "claude-3-opus-20240229" => AnthropicModel::Claude3Opus,
@@ -127,12 +114,6 @@ impl API {
                     OpenAIModel::O1Mini => "o1-mini",
                 };
                 ("openai".to_string(), model_str.to_string())
-            }
-            API::Groq(model) => {
-                let model_str = match model {
-                    GroqModel::LLaMA70B => "llama3-70b-8192",
-                };
-                ("groq".to_string(), model_str.to_string())
             }
             API::Anthropic(model) => {
                 let model_str = match model {
@@ -185,6 +166,52 @@ impl Usage {
     }
 }
 
+pub trait ToolFunction: Send + Sync {
+    fn call(&self, args: &[serde_json::Value]) -> serde_json::Value;
+    // Add these methods to the trait
+    fn clone_box(&self) -> Box<dyn ToolFunction>;
+    fn debug_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+}
+
+// Implement Clone for Box<dyn ToolFunction>
+impl Clone for Box<dyn ToolFunction> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+// Implement Debug for Box<dyn ToolFunction>
+impl std::fmt::Debug for Box<dyn ToolFunction> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.debug_fmt(f)
+    }
+}
+
+// NOTE: This is only to be used to refer to rust functions
+// TODO: This should probably be refactored at some point to keep the functions separated
+//       from the struct, but honestly I think `wire` is moving toward an entirely rust
+//       library
+#[derive(Debug, Clone, Serialize)]
+pub struct Tool {
+    #[serde(rename = "type")]
+    pub function_type: String,
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    #[serde(skip)]
+    pub function: Box<dyn ToolFunction>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FunctionCall {
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub id: String,
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct RequestParams {
     pub provider: String,
@@ -197,4 +224,5 @@ pub struct RequestParams {
     pub authorization_token: String,
     pub max_tokens: Option<u16>,
     pub system_prompt: Option<String>,
+    pub tools: Option<Vec<Tool>>,
 }

@@ -1,0 +1,18 @@
+[package]
+name = "wire"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22.1"
+bstr = "1.11.1"
+fancy-regex = "0.14.0"
+mockito = "1.7.0"
+native-tls = "0.2.12"
+reqwest = { version = "0.12.11", features = ["blocking", "json"] }
+rustc-hash = "2.1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.133"
+tokio = "1.44.1"
+wiremock = "0.6.3"
+wire-macros = { path = "../wire-macros" }

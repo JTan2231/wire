@@ -5,20 +5,10 @@ use std::net::{TcpStream, ToSocketAddrs};
 
 use crate::types::*;
 
+// TODO: This would probably be better off as a builder
 fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::RequestBuilder {
-    let body = match params.provider.as_str() {
+    let mut body = match params.provider.as_str() {
         "openai" => serde_json::json!({
-            "model": params.model,
-            "messages": params.messages.iter()
-                .map(|message| {
-                    serde_json::json!({
-                        "role": message.message_type.to_string(),
-                        "content": message.content
-                    })
-                }).collect::<Vec<serde_json::Value>>(),
-            "stream": params.stream,
-        }),
-        "groq" => serde_json::json!({
             "model": params.model,
             "messages": params.messages.iter()
                 .map(|message| {
@@ -63,6 +53,10 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
         _ => panic!("Invalid provider for request_body: {}", params.provider),
     };
 
+    if let Some(tools) = &params.tools {
+        body["tools"] = serde_json::json!(tools);
+    }
+
     let url = if params.host == "localhost" {
         format!("http://{}:{}{}", params.host, params.port, params.path)
     } else {
@@ -71,7 +65,7 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
     let mut request = client.post(url.clone()).json(&body);
 
     match params.provider.as_str() {
-        "openai" | "groq" => {
+        "openai" => {
             request = request.header(
                 "Authorization",
                 format!("Bearer {}", params.authorization_token),
@@ -97,17 +91,6 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
 fn build_request_raw(params: &RequestParams) -> String {
     let body = match params.provider.as_str() {
         "openai" => serde_json::json!({
-            "model": params.model,
-            "messages": params.messages.iter()
-                .map(|message| {
-                    serde_json::json!({
-                        "role": message.message_type.to_string(),
-                        "content": message.content
-                    })
-                }).collect::<Vec<serde_json::Value>>(),
-            "stream": params.stream,
-        }),
-        "groq" => serde_json::json!({
             "model": params.model,
             "messages": params.messages.iter()
                 .map(|message| {
@@ -161,11 +144,6 @@ fn build_request_raw(params: &RequestParams) -> String {
             "\r\n".to_string(),
             params.path.clone(),
         ),
-        "groq" => (
-            format!("Authorization: Bearer {}\r\n", params.authorization_token),
-            "\r\n".to_string(),
-            params.path.clone(),
-        ),
         "anthropic" => (
             format!("x-api-key: {}\r\n", params.authorization_token),
             "anthropic-version: 2023-06-01\r\n\r\n".to_string(),
@@ -207,13 +185,18 @@ fn get_openai_request_params(
     system_prompt: String,
     api: API,
     chat_history: &Vec<Message>,
+    tools: Option<Vec<Tool>>,
     stream: bool,
 ) -> RequestParams {
     let (provider, model) = api.to_strings();
     RequestParams {
         provider,
         host: "api.openai.com".to_string(),
-        path: "/v1/chat/completions".to_string(),
+        path: if tools.is_some() {
+            "/v1/chat/responses".to_string()
+        } else {
+            "/v1/chat/completions".to_string()
+        },
         port: 443,
         messages: vec![Message {
             message_type: MessageType::System,
@@ -231,38 +214,7 @@ fn get_openai_request_params(
             .expect("OPENAI_API_KEY environment variable not set"),
         max_tokens: None,
         system_prompt: None,
-    }
-}
-
-// this is basically a copy of the openai_request_params
-fn get_groq_request_params(
-    system_prompt: String,
-    api: API,
-    chat_history: &Vec<Message>,
-    stream: bool,
-) -> RequestParams {
-    let (provider, model) = api.to_strings();
-    RequestParams {
-        provider,
-        host: "api.groq.com".to_string(),
-        path: "/openai/v1/chat/completions".to_string(),
-        port: 443,
-        messages: vec![Message {
-            message_type: MessageType::System,
-            content: system_prompt.clone(),
-            api,
-            system_prompt,
-        }]
-        .iter()
-        .chain(chat_history.iter())
-        .cloned()
-        .collect::<Vec<Message>>(),
-        model,
-        stream,
-        authorization_token: env::var("GROQ_API_KEY")
-            .expect("GRQO_API_KEY environment variable not set"),
-        max_tokens: None,
-        system_prompt: None,
+        tools,
     }
 }
 
@@ -285,6 +237,7 @@ fn get_anthropic_request_params(
             .expect("ANTHROPIC_API_KEY environment variable not set"),
         max_tokens: Some(4096),
         system_prompt: Some(system_prompt),
+        tools: None,
     }
 }
 
@@ -315,6 +268,7 @@ fn get_gemini_request_params(
             .expect("GEMINI_API_KEY environment variable not set"),
         max_tokens: Some(4096),
         system_prompt: Some(system_prompt),
+        tools: None,
     }
 }
 
@@ -322,6 +276,7 @@ fn get_params(
     system_prompt: &str,
     api: API,
     chat_history: &Vec<Message>,
+    tools: Option<Vec<Tool>>,
     stream: bool,
 ) -> RequestParams {
     match api {
@@ -331,12 +286,13 @@ fn get_params(
             chat_history,
             stream,
         ),
-        API::OpenAI(_) => {
-            get_openai_request_params(system_prompt.to_string(), api.clone(), chat_history, stream)
-        }
-        API::Groq(_) => {
-            get_groq_request_params(system_prompt.to_string(), api.clone(), chat_history, stream)
-        }
+        API::OpenAI(_) => get_openai_request_params(
+            system_prompt.to_string(),
+            api.clone(),
+            chat_history,
+            tools,
+            stream,
+        ),
         API::Gemini(_) => {
             get_gemini_request_params(system_prompt.to_string(), api.clone(), chat_history, stream)
         }
@@ -362,7 +318,7 @@ fn read_json_response(
     response_json: &serde_json::Value,
 ) -> Result<String, Box<dyn std::error::Error>> {
     match api {
-        API::Anthropic(_) | API::Groq(_) => response_json
+        API::Anthropic(_) => response_json
             .get("content")
             .and_then(|v| v.get(0))
             .and_then(|v| v.get("text"))
@@ -596,7 +552,7 @@ pub fn prompt_stream(
     system_prompt: &str,
     tx: std::sync::mpsc::Sender<String>,
 ) -> Result<Message, Box<dyn std::error::Error>> {
-    let params = get_params(system_prompt, api.clone(), chat_history, true);
+    let params = get_params(system_prompt, api.clone(), chat_history, None, true);
     let request = build_request_raw(&params);
 
     let mut stream = connect_https(&params.host, params.port);
@@ -633,7 +589,7 @@ pub async fn prompt(
     system_prompt: &str,
     chat_history: &Vec<Message>,
 ) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
-    let params = get_params(system_prompt, api.clone(), chat_history, false);
+    let params = get_params(system_prompt, api.clone(), chat_history, None, false);
     let client = reqwest::Client::new();
 
     let response = build_request(&client, &params).send().await?;
@@ -663,6 +619,49 @@ pub async fn prompt(
     ))
 }
 
+pub async fn response(
+    api: API,
+    system_prompt: &str,
+    chat_history: &Vec<Message>,
+    tools: Vec<Tool>,
+) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
+    let function_map: std::collections::HashMap<_, _> =
+        tools.iter().map(|t| (t.name.clone(), t)).collect();
+    let params = get_params(system_prompt, api.clone(), chat_history, Some(tools), false);
+    let client = reqwest::Client::new();
+
+    let response = build_request(&client, &params).send().await?;
+    // NOTE: I guess anthropic's response doesn't work with `.json()`?
+    let body = response.text().await?;
+
+    let response_json: serde_json::Value = serde_json::from_str(&body)?;
+
+    let mut content = read_json_response(&api, &response_json)?;
+
+    content = unescape(&content);
+    if content.starts_with("\"") && content.ends_with("\"") {
+        content = content[1..content.len() - 1].to_string();
+    }
+
+    let function_calls: Vec<FunctionCall> = serde_json::from_str(&content)?;
+    for call in function_calls {
+        let function = function_map.get(&call.name).unwrap();
+    }
+
+    Ok((
+        Message {
+            message_type: MessageType::Assistant,
+            content,
+            api,
+            system_prompt: system_prompt.to_string(),
+        },
+        Usage {
+            tokens_in: 0,
+            tokens_out: 0,
+        },
+    ))
+}
+
 /// The same as `prompt`, but for hitting a local endpoint
 /// NOTE: This _always_ assumes that the endpoint matches OpenAI's API specification
 pub async fn prompt_local(
@@ -672,8 +671,13 @@ pub async fn prompt_local(
     system_prompt: &str,
     chat_history: &Vec<Message>,
 ) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
-    let mut params =
-        get_openai_request_params(system_prompt.to_string(), api.clone(), chat_history, false);
+    let mut params = get_openai_request_params(
+        system_prompt.to_string(),
+        api.clone(),
+        chat_history,
+        None,
+        false,
+    );
 
     // Overriding these with mock parameters
     params.host = host.to_string();
@@ -727,7 +731,6 @@ mod tests {
     fn setup_test_environment() {
         std::env::set_var("OPENAI_API_KEY", "test-key");
         std::env::set_var("ANTHROPIC_API_KEY", "test-key");
-        std::env::set_var("GROQ_API_KEY", "test-key");
         std::env::set_var("GEMINI_API_KEY", "test-key");
     }
 
@@ -753,6 +756,7 @@ mod tests {
             authorization_token: "test-key".to_string(),
             max_tokens: None,
             system_prompt: None,
+            tools: None,
         };
 
         let request = build_request(&client, &params);
@@ -777,6 +781,7 @@ mod tests {
             authorization_token: "test-key".to_string(),
             max_tokens: Some(4096),
             system_prompt: Some("test system".to_string()),
+            tools: None,
         };
 
         let request = build_request(&client, &params);
@@ -801,6 +806,7 @@ mod tests {
             authorization_token: "test".to_string(),
             max_tokens: None,
             system_prompt: None,
+            tools: None,
         };
 
         let _ = build_request(&client, &params);
@@ -813,8 +819,13 @@ mod tests {
         let chat_history = create_mock_chat_history();
         let system_prompt = "test system";
 
-        let params =
-            get_openai_request_params(system_prompt.to_string(), api.clone(), &chat_history, false);
+        let params = get_openai_request_params(
+            system_prompt.to_string(),
+            api.clone(),
+            &chat_history,
+            None,
+            false,
+        );
 
         assert_eq!(params.provider, "openai");
         assert_eq!(params.host, "api.openai.com");
@@ -843,30 +854,6 @@ mod tests {
         assert_eq!(params.host, "api.anthropic.com");
         assert_eq!(params.max_tokens, Some(4096));
         assert_eq!(params.system_prompt, Some(system_prompt.to_string()));
-    }
-
-    #[test]
-    fn test_get_groq_params() {
-        env::set_var("GROQ_API_KEY", "test-key");
-        let system_prompt = "You are a helpful assistant.";
-        let api = API::Groq(GroqModel::LLaMA70B);
-        let chat_history = vec![Message {
-            message_type: MessageType::User,
-            content: "Hello".to_string(),
-            api: api.clone(),
-            system_prompt: system_prompt.to_string(),
-        }];
-
-        let params =
-            get_groq_request_params(system_prompt.to_string(), api.clone(), &chat_history, false);
-
-        assert_eq!(params.host, "api.groq.com");
-        assert_eq!(params.path, "/openai/v1/chat/completions");
-        assert_eq!(params.port, 443);
-        assert_eq!(params.authorization_token, "test-key");
-        assert_eq!(params.messages.len(), 2);
-        assert_eq!(params.stream, false);
-        assert_eq!(params.max_tokens, None);
     }
 
     #[test]
@@ -908,6 +895,7 @@ mod tests {
             system_prompt,
             API::OpenAI(OpenAIModel::GPT4o),
             &chat_history,
+            None,
             false,
         );
         assert_eq!(openai_params.host, "api.openai.com");
@@ -916,22 +904,16 @@ mod tests {
             system_prompt,
             API::Anthropic(AnthropicModel::Claude35Sonnet),
             &chat_history,
+            None,
             false,
         );
         assert_eq!(anthropic_params.host, "api.anthropic.com");
-
-        let groq_params = get_params(
-            system_prompt,
-            API::Groq(GroqModel::LLaMA70B),
-            &chat_history,
-            false,
-        );
-        assert_eq!(groq_params.host, "api.groq.com");
 
         let gemini_params = get_params(
             system_prompt,
             API::Gemini(GeminiModel::Gemini20Flash),
             &chat_history,
+            None,
             false,
         );
         assert_eq!(gemini_params.host, "generativelanguage.googleapis.com");
@@ -998,7 +980,6 @@ mod tests {
             path: match provider {
                 "openai" => "/v1/chat/completions".to_string(),
                 "anthropic" => "/v1/messages".to_string(),
-                "groq" => "/v1/chat/completions".to_string(),
                 "gemini" => "/v1/generateContent".to_string(),
                 _ => panic!("Invalid provider"),
             },
@@ -1007,7 +988,6 @@ mod tests {
             model: match provider {
                 "openai" => "gpt-4".to_string(),
                 "anthropic" => "claude-3".to_string(),
-                "groq" => "mixtral-8x7b-32768".to_string(),
                 "gemini" => "gemini-pro".to_string(),
                 _ => panic!("Invalid provider"),
             },
@@ -1015,6 +995,7 @@ mod tests {
             authorization_token: "test-key".to_string(),
             max_tokens: Some(4096),
             system_prompt: Some("test system prompt".to_string()),
+            tools: None,
         }
     }
 
@@ -1022,7 +1003,7 @@ mod tests {
     fn test_urls() {
         let client = reqwest::Client::new();
 
-        let providers = vec!["openai", "anthropic", "groq", "gemini"];
+        let providers = vec!["openai", "anthropic", "gemini"];
         for provider in providers {
             let params = create_base_params(provider);
             let request = build_request(&client, &params).build().unwrap();
@@ -1078,18 +1059,6 @@ mod tests {
             "2023-06-01"
         );
 
-        let groq_params = create_base_params("groq");
-        let request = build_request(&client, &groq_params).build().unwrap();
-        assert_eq!(
-            request
-                .headers()
-                .get("Authorization")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            format!("Bearer {}", groq_params.authorization_token)
-        );
-
         let gemini_params = create_base_params("gemini");
         let request = build_request(&client, &gemini_params).build().unwrap();
         assert!(request
@@ -1135,7 +1104,7 @@ mod tests {
     #[test]
     fn test_stream_parameter() {
         let client = reqwest::Client::new();
-        let providers = vec!["openai", "anthropic", "groq", "gemini"];
+        let providers = vec!["openai", "anthropic", "gemini"];
 
         for provider in providers {
             let mut params = create_base_params(provider);

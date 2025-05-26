@@ -2,9 +2,12 @@ mod network;
 mod tiktoken;
 pub mod types;
 
-use std::collections::HashMap;
+use crate::types::{Message, Tool, API};
 
-use crate::types::{Message, Usage, API};
+pub mod prelude {
+    pub use crate::types::Tool;
+    pub use wire_macros::get_tool_from_function;
+}
 
 // TODO: there probably needs to be a better determination
 //       on whether the tokenizer is needed to begin with
@@ -107,6 +110,27 @@ pub fn prompt_stream(
             return Err(e);
         }
     };
+
+    Ok(response)
+}
+
+// TODO: Streaming for responses
+
+/// Responses API
+pub async fn response(
+    api: API,
+    system_prompt: &str,
+    chat_history: &Vec<Message>,
+    tools: Vec<Tool>,
+) -> Result<Message, Box<dyn std::error::Error>> {
+    let (response, _) =
+        match network::response(api.clone(), system_prompt, chat_history, tools).await {
+            Ok(r) => (r.0, r.1),
+            Err(e) => {
+                println!("error prompting LLM: {}", e);
+                return Err(e);
+            }
+        };
 
     Ok(response)
 }
