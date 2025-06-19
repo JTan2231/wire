@@ -7,6 +7,8 @@ use crate::types::*;
 
 // TODO: This would probably be better off as a builder
 fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::RequestBuilder {
+    // TODO: There has to be a more efficient way of dealing with this
+    //       Probably with the type system instead of this frankenstein mapping
     let mut body = match params.provider.as_str() {
         "openai" => serde_json::json!({
             "model": params.model,
@@ -88,6 +90,7 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
 }
 
 // This is really just for streaming since SSE isn't really well supported with reqwest
+// TODO: We should rectify that instead of this nonsense
 fn build_request_raw(params: &RequestParams) -> String {
     let body = match params.provider.as_str() {
         "openai" => serde_json::json!({
@@ -192,17 +195,15 @@ fn get_openai_request_params(
     RequestParams {
         provider,
         host: "api.openai.com".to_string(),
-        path: if tools.is_some() {
-            "/v1/chat/responses".to_string()
-        } else {
-            "/v1/chat/completions".to_string()
-        },
+        path: "/v1/chat/completions".to_string(),
         port: 443,
         messages: vec![Message {
             message_type: MessageType::System,
             content: system_prompt.clone(),
             api,
             system_prompt,
+            tool_calls: None,
+            tool_call_id: None,
         }]
         .iter()
         .chain(chat_history.iter())
@@ -578,6 +579,8 @@ pub fn prompt_stream(
         content,
         api,
         system_prompt: system_prompt.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
     })
 }
 
@@ -588,7 +591,7 @@ pub async fn prompt(
     api: API,
     system_prompt: &str,
     chat_history: &Vec<Message>,
-) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
+) -> Result<Message, Box<dyn std::error::Error>> {
     let params = get_params(system_prompt, api.clone(), chat_history, None, false);
     let client = reqwest::Client::new();
 
@@ -605,61 +608,99 @@ pub async fn prompt(
         content = content[1..content.len() - 1].to_string();
     }
 
-    Ok((
-        Message {
-            message_type: MessageType::Assistant,
-            content,
-            api,
-            system_prompt: system_prompt.to_string(),
-        },
-        Usage {
-            tokens_in: 0,
-            tokens_out: 0,
-        },
-    ))
+    Ok(Message {
+        message_type: MessageType::Assistant,
+        content,
+        api,
+        system_prompt: system_prompt.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+    })
 }
 
-pub async fn response(
+pub async fn prompt_with_tools(
     api: API,
     system_prompt: &str,
-    chat_history: &Vec<Message>,
+    mut chat_history: Vec<Message>,
     tools: Vec<Tool>,
-) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
-    let function_map: std::collections::HashMap<_, _> =
-        tools.iter().map(|t| (t.name.clone(), t)).collect();
-    let params = get_params(system_prompt, api.clone(), chat_history, Some(tools), false);
+) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
+    let mut calling_tools = false;
 
-    let response = build_request(&client, &params).send().await?;
-    // NOTE: I guess anthropic's response doesn't work with `.json()`?
-    let body = response.text().await?;
+    while calling_tools {
+        let params = get_params(
+            system_prompt,
+            api.clone(),
+            &chat_history.clone(),
+            Some(tools.clone()),
+            false,
+        );
 
-    let response_json: serde_json::Value = serde_json::from_str(&body)?;
+        let response = build_request(&client, &params).send().await?;
+        // NOTE: I guess anthropic's response doesn't work with `.json()`?
+        let body = response.text().await?;
 
-    let mut content = read_json_response(&api, &response_json)?;
+        let response_json: serde_json::Value = serde_json::from_str(&body)?;
+        let content = response_json
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
-    content = unescape(&content);
-    if content.starts_with("\"") && content.ends_with("\"") {
-        content = content[1..content.len() - 1].to_string();
+        // Normal response == no tool calls
+        if let Some(mut content) = content {
+            calling_tools = false;
+            content = unescape(&content);
+            if content.starts_with("\"") && content.ends_with("\"") {
+                content = content[1..content.len() - 1].to_string();
+            }
+
+            println!("normal response: {}", content);
+
+            // TODO: A normal response...
+        } else {
+            // name -> tool
+            let tool_map: std::collections::HashMap<_, _> =
+                tools.iter().map(|t| (t.name.clone(), t)).collect();
+
+            let content = response_json
+                .get("choices")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("tool_calls"))
+                .ok_or_else(|| "Missing both content and tool calls")?;
+
+            let tool_calls: Vec<FunctionCall> = serde_json::from_value(content.clone())?;
+
+            chat_history.push(Message {
+                message_type: MessageType::FunctionCall,
+                content: String::new(),
+                api: api.clone(),
+                system_prompt: String::new(),
+                tool_call_id: None,
+                tool_calls: Some(tool_calls.clone()),
+            });
+
+            for call in tool_calls {
+                let tool = tool_map.get(&call.function.name).unwrap();
+                let tool_args: serde_json::Value = serde_json::from_str(&call.function.arguments)?;
+
+                chat_history.push(Message {
+                    message_type: MessageType::FunctionCallOutput,
+                    content: tool.function.call(tool_args).to_string(),
+                    api: api.clone(),
+                    system_prompt: system_prompt.to_string(),
+                    tool_call_id: Some(call.id),
+                    tool_calls: None,
+                });
+            }
+
+            println!("chat history after tool calling: {:?}", chat_history);
+        }
     }
 
-    let function_calls: Vec<FunctionCall> = serde_json::from_str(&content)?;
-    for call in function_calls {
-        let function = function_map.get(&call.name).unwrap();
-    }
-
-    Ok((
-        Message {
-            message_type: MessageType::Assistant,
-            content,
-            api,
-            system_prompt: system_prompt.to_string(),
-        },
-        Usage {
-            tokens_in: 0,
-            tokens_out: 0,
-        },
-    ))
+    Ok(())
 }
 
 /// The same as `prompt`, but for hitting a local endpoint
@@ -670,7 +711,7 @@ pub async fn prompt_local(
     api: API,
     system_prompt: &str,
     chat_history: &Vec<Message>,
-) -> Result<(Message, Usage), Box<dyn std::error::Error>> {
+) -> Result<Message, Box<dyn std::error::Error>> {
     let mut params = get_openai_request_params(
         system_prompt.to_string(),
         api.clone(),
@@ -698,18 +739,14 @@ pub async fn prompt_local(
         content = content[1..content.len() - 1].to_string();
     }
 
-    Ok((
-        Message {
-            message_type: MessageType::Assistant,
-            content,
-            api,
-            system_prompt: system_prompt.to_string(),
-        },
-        Usage {
-            tokens_in: 0,
-            tokens_out: 0,
-        },
-    ))
+    Ok(Message {
+        message_type: MessageType::Assistant,
+        content,
+        api,
+        system_prompt: system_prompt.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+    })
 }
 
 #[cfg(test)]
@@ -725,6 +762,8 @@ mod tests {
             content: content.to_string(),
             api: API::OpenAI(OpenAIModel::GPT4o),
             system_prompt: "test system prompt".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -866,6 +905,8 @@ mod tests {
             content: "Hello".to_string(),
             api: api.clone(),
             system_prompt: system_prompt.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
         }];
 
         let params =
@@ -969,7 +1010,7 @@ mod tests {
         .await;
 
         assert!(result.is_ok());
-        let (message, _) = result.unwrap();
+        let message = result.unwrap();
         assert_eq!(message.content, "test response");
     }
 

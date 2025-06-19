@@ -5,7 +5,7 @@ pub mod types;
 use crate::types::{Message, Tool, API};
 
 pub mod prelude {
-    pub use crate::types::Tool;
+    pub use crate::types::{Tool, ToolWrapper};
     pub use wire_macros::get_tool_from_function;
 }
 
@@ -29,9 +29,6 @@ pub struct Wire {
 impl Wire {
     /// Create a new wire
     /// Parameters:
-    /// - `tokenizer_path` -- Filepath to an existing tokenizer file
-    /// - `download`       -- Optional boolean deciding whether to download a tokenizer file (OAI 400k by default)
-    ///                       if it doesn't already exist
     /// - `local_url`      -- Optional URL pointing to a custom endpoint matching the OpenAI API
     ///                       specification. It _must_ match the pattern of
     ///                       `<protocol>://<address>:<port>`
@@ -47,7 +44,7 @@ impl Wire {
         chat_history: &Vec<Message>,
     ) -> Result<Message, Box<dyn std::error::Error>> {
         // TODO: error handling here could probably be a bit more fleshed out
-        let (response, _) = if let Some(url) = &self.local_url {
+        let response = if let Some(url) = &self.local_url {
             let without_protocol = url.split("://").nth(1).unwrap_or(url);
 
             let parts: Vec<&str> = without_protocol.split(':').collect();
@@ -59,7 +56,7 @@ impl Wire {
 
             match network::prompt_local(host, port, api.clone(), system_prompt, chat_history).await
             {
-                Ok(r) => (r.0, r.1),
+                Ok(r) => r,
                 Err(e) => {
                     println!("error prompting LLM: {}", e);
                     return Err(e);
@@ -67,7 +64,7 @@ impl Wire {
             }
         } else {
             match network::prompt(api.clone(), system_prompt, chat_history).await {
-                Ok(r) => (r.0, r.1),
+                Ok(r) => r,
                 Err(e) => {
                     println!("error prompting LLM: {}", e);
                     return Err(e);
@@ -116,16 +113,16 @@ pub fn prompt_stream(
 
 // TODO: Streaming for responses
 
-/// Responses API
-pub async fn response(
+// TODO: This should probably return a full response or something similarly useful
+pub async fn prompt_with_tools(
     api: API,
     system_prompt: &str,
-    chat_history: &Vec<Message>,
+    chat_history: Vec<Message>,
     tools: Vec<Tool>,
-) -> Result<Message, Box<dyn std::error::Error>> {
-    let (response, _) =
-        match network::response(api.clone(), system_prompt, chat_history, tools).await {
-            Ok(r) => (r.0, r.1),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response =
+        match network::prompt_with_tools(api.clone(), system_prompt, chat_history, tools).await {
+            Ok(r) => r,
             Err(e) => {
                 println!("error prompting LLM: {}", e);
                 return Err(e);

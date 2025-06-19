@@ -5,7 +5,11 @@ pub enum MessageType {
     System,
     User,
     Assistant,
+    FunctionCall,
+    FunctionCallOutput,
 }
+
+// TODO: Refactor types for the Responses API instead of the completions API
 
 impl MessageType {
     pub fn to_string(&self) -> String {
@@ -13,6 +17,8 @@ impl MessageType {
             MessageType::System => "system".to_string(),
             MessageType::User => "user".to_string(),
             MessageType::Assistant => "assistant".to_string(),
+            MessageType::FunctionCall => "function".to_string(),
+            MessageType::FunctionCallOutput => "tool".to_string(),
         }
     }
 }
@@ -138,59 +144,11 @@ impl API {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Message {
-    pub message_type: MessageType,
-    pub content: String,
-    pub api: API,
-    pub system_prompt: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Usage {
-    pub tokens_in: u64,
-    pub tokens_out: u64,
-}
-
-impl Usage {
-    pub fn new() -> Self {
-        Usage {
-            tokens_in: 0,
-            tokens_out: 0,
-        }
-    }
-
-    pub fn add(&mut self, delta: Usage) {
-        self.tokens_in += delta.tokens_in;
-        self.tokens_out += delta.tokens_out;
-    }
-}
-
-pub trait ToolFunction: Send + Sync {
-    fn call(&self, args: &[serde_json::Value]) -> serde_json::Value;
-    // Add these methods to the trait
-    fn clone_box(&self) -> Box<dyn ToolFunction>;
-    fn debug_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
-}
-
-// Implement Clone for Box<dyn ToolFunction>
-impl Clone for Box<dyn ToolFunction> {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
-}
-
-// Implement Debug for Box<dyn ToolFunction>
-impl std::fmt::Debug for Box<dyn ToolFunction> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.debug_fmt(f)
-    }
-}
-
 // NOTE: This is only to be used to refer to rust functions
+// NOTE: Functions used as tools _must_ have a `fn f(args: serde_json::Value) -> serde_json::Value`
+//       type signature
 // TODO: This should probably be refactored at some point to keep the functions separated
-//       from the struct, but honestly I think `wire` is moving toward an entirely rust
-//       library
+//       from the struct
 #[derive(Debug, Clone, Serialize)]
 pub struct Tool {
     #[serde(rename = "type")]
@@ -202,14 +160,74 @@ pub struct Tool {
     pub function: Box<dyn ToolFunction>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
+    pub id: String,
     #[serde(rename = "type")]
     pub call_type: String,
-    pub id: String,
-    pub call_id: String,
+    pub function: Function,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Function {
     pub name: String,
     pub arguments: String,
+}
+
+// TODO: Hideous type. Move the tool stuff out of here.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Message {
+    // TODO: This gets mapped to `role` in `build_request` and should be more clearly named
+    pub message_type: MessageType,
+    pub content: String,
+    pub api: API,
+    // TODO: Do we really need this with _every_ message?
+    pub system_prompt: String,
+
+    // Tool calls made by the model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<FunctionCall>>,
+
+    // Tool call results--actual result content will be in `content` if this isn't None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+pub trait ToolFunction: Send + Sync {
+    fn call(&self, args: serde_json::Value) -> serde_json::Value;
+    fn clone_box(&self) -> Box<dyn ToolFunction>;
+    fn debug_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+}
+
+impl Clone for Box<dyn ToolFunction> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+impl std::fmt::Debug for Box<dyn ToolFunction> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.debug_fmt(f)
+    }
+}
+
+pub struct ToolWrapper<F>(pub F);
+
+impl<F: Clone> ToolFunction for ToolWrapper<F>
+where
+    F: Fn(serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
+{
+    fn call(&self, args: serde_json::Value) -> serde_json::Value {
+        self.0(args)
+    }
+
+    fn clone_box(&self) -> Box<dyn ToolFunction> {
+        Box::new(Self(self.0.clone()))
+    }
+
+    fn debug_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FnWrapper")
+    }
 }
 
 #[derive(Clone, Debug)]
