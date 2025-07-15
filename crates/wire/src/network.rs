@@ -14,25 +14,115 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
             "model": params.model,
             "messages": params.messages.iter()
                 .map(|message| {
-                    serde_json::json!({
+                    let mut m = serde_json::json!({
                         "role": message.message_type.to_string(),
-                        "content": message.content
-                    })
+                        "content": message.content,
+                    });
+
+                    if message.message_type == MessageType::FunctionCall {
+                        m["role"] = serde_json::Value::String("assistant".to_string());
+                        m["name"] = serde_json::Value::String("idk".to_string());
+                        m["tool_calls"] = serde_json::json!(message.tool_calls);
+                    }
+
+                    if message.message_type == MessageType::FunctionCallOutput {
+                        m["tool_call_id"] = serde_json::Value::String(message.tool_call_id.clone().unwrap());
+                    }
+
+                    m
                 }).collect::<Vec<serde_json::Value>>(),
             "stream": params.stream,
         }),
-        "anthropic" => serde_json::json!({
-            "model": params.model,
-            "messages": params.messages.iter().map(|message| {
-                serde_json::json!({
-                    "role": message.message_type.to_string(),
-                    "content": message.content
-                })
-            }).collect::<Vec<serde_json::Value>>(),
-            "stream": params.stream,
-            "max_tokens": params.max_tokens.unwrap(),
-            "system": params.system_prompt.clone().unwrap(),
-        }),
+        "anthropic" => {
+            // 1. First, build the list of messages using the peekable iterator logic.
+            let mut processed_messages: Vec<serde_json::Value> = Vec::new();
+            let mut iter = params.messages.iter().peekable();
+
+            while let Some(current_message) = iter.next() {
+                if current_message.message_type == MessageType::FunctionCallOutput {
+                    let mut tool_results = Vec::new();
+
+                    if let Some(id) = &current_message.tool_call_id {
+                        tool_results.push(serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": id,
+                            "content": &current_message.content
+                        }));
+                    }
+
+                    while let Some(next_message) = iter.peek() {
+                        if next_message.message_type == MessageType::FunctionCallOutput {
+                            let consumed_message = iter.next().unwrap();
+                            if let Some(id) = &consumed_message.tool_call_id {
+                                tool_results.push(serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": id,
+                                    "content": &consumed_message.content
+                                }));
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    processed_messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": tool_results
+                    }));
+                } else if current_message.message_type == MessageType::Assistant {
+                    let tool_uses: Vec<serde_json::Value> =
+                        if let Some(calls) = &current_message.tool_calls {
+                            calls
+                                .iter()
+                                .map(|call| {
+                                    let input = serde_json::from_str::<serde_json::Value>(
+                                        &call.function.arguments,
+                                    )
+                                    .unwrap_or(serde_json::Value::Null);
+
+                                    serde_json::json!({
+                                        "type": "tool_use",
+                                        "id": call.id,
+                                        "name": call.function.name,
+                                        "input": input
+                                    })
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                    let mut content = if !current_message.content.is_empty() {
+                        vec![serde_json::json!({
+                            "type": "text",
+                            "text": current_message.content
+                        })]
+                    } else {
+                        Vec::new()
+                    };
+
+                    content.extend(tool_uses);
+
+                    processed_messages.push(serde_json::json!({
+                        "role": current_message.message_type.to_string(),
+                        "content": content
+                    }));
+                } else {
+                    processed_messages.push(serde_json::json!({
+                        "role": current_message.message_type.to_string(),
+                        "content": &current_message.content
+                    }));
+                }
+            }
+
+            serde_json::json!({
+                "model": params.model,
+                "messages": processed_messages, // <-- The new list is used here
+                "stream": params.stream,
+                "max_tokens": params.max_tokens.unwrap(),
+                "system": params.system_prompt.clone().unwrap(),
+            })
+        }
         "gemini" => serde_json::json!({
             "contents": params.messages.iter().map(|m| {
                 serde_json::json!({
@@ -56,7 +146,27 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
     };
 
     if let Some(tools) = &params.tools {
-        body["tools"] = serde_json::json!(tools);
+        let tools_mapped = tools
+            .iter()
+            .map(|t| match params.provider.as_str() {
+                "openai" => serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name.clone(),
+                        "description": t.description.clone(),
+                        "parameters": t.parameters.clone(),
+                    }
+                }),
+                "anthropic" => serde_json::json!({
+                    "name": t.name.clone(),
+                    "description": t.description.clone(),
+                    "input_schema": t.parameters.clone(),
+                }),
+                _ => serde_json::json!({}),
+            })
+            .collect::<Vec<_>>();
+
+        body["tools"] = serde_json::json!(tools_mapped);
     }
 
     let url = if params.host == "localhost" {
@@ -204,6 +314,7 @@ fn get_openai_request_params(
             system_prompt,
             tool_calls: None,
             tool_call_id: None,
+            name: None,
         }]
         .iter()
         .chain(chat_history.iter())
@@ -223,6 +334,7 @@ fn get_anthropic_request_params(
     system_prompt: String,
     api: API,
     chat_history: &Vec<Message>,
+    tools: Option<Vec<Tool>>,
     stream: bool,
 ) -> RequestParams {
     let (provider, model) = api.to_strings();
@@ -238,7 +350,7 @@ fn get_anthropic_request_params(
             .expect("ANTHROPIC_API_KEY environment variable not set"),
         max_tokens: Some(4096),
         system_prompt: Some(system_prompt),
-        tools: None,
+        tools,
     }
 }
 
@@ -285,6 +397,7 @@ fn get_params(
             system_prompt.to_string(),
             api.clone(),
             chat_history,
+            tools,
             stream,
         ),
         API::OpenAI(_) => get_openai_request_params(
@@ -581,6 +694,7 @@ pub fn prompt_stream(
         system_prompt: system_prompt.to_string(),
         tool_calls: None,
         tool_call_id: None,
+        name: None,
     })
 }
 
@@ -615,6 +729,7 @@ pub async fn prompt(
         system_prompt: system_prompt.to_string(),
         tool_calls: None,
         tool_call_id: None,
+        name: None,
     })
 }
 
@@ -623,9 +738,9 @@ pub async fn prompt_with_tools(
     system_prompt: &str,
     mut chat_history: Vec<Message>,
     tools: Vec<Tool>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
-    let mut calling_tools = false;
+    let mut calling_tools = true;
 
     while calling_tools {
         let params = get_params(
@@ -641,66 +756,183 @@ pub async fn prompt_with_tools(
         let body = response.text().await?;
 
         let response_json: serde_json::Value = serde_json::from_str(&body)?;
-        let content = response_json
-            .get("choices")
-            .and_then(|v| v.get(0))
-            .and_then(|v| v.get("message"))
-            .and_then(|v| v.get("content"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
 
-        // Normal response == no tool calls
-        if let Some(mut content) = content {
-            calling_tools = false;
-            content = unescape(&content);
-            if content.starts_with("\"") && content.ends_with("\"") {
-                content = content[1..content.len() - 1].to_string();
+        match api {
+            API::OpenAI(_) => {
+                let content = response_json
+                    .get("choices")
+                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.get("content"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                // Normal response == no tool calls
+                if let Some(mut content) = content {
+                    calling_tools = false;
+                    content = unescape(&content);
+                    if content.starts_with("\"") && content.ends_with("\"") {
+                        content = content[1..content.len() - 1].to_string();
+                    }
+
+                    chat_history.push(Message {
+                        message_type: MessageType::Assistant,
+                        content,
+                        api: api.clone(),
+                        system_prompt: system_prompt.to_string(),
+                        tool_call_id: None,
+                        tool_calls: None,
+                        name: None,
+                    });
+                } else {
+                    // name -> tool
+                    let tool_map: std::collections::HashMap<_, _> =
+                        tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
+
+                    let content = response_json
+                        .get("choices")
+                        .and_then(|v| v.get(0))
+                        .and_then(|v| v.get("message"))
+                        .and_then(|v| v.get("tool_calls"))
+                        .ok_or_else(|| "Missing both content and tool calls")?;
+
+                    let tool_calls: Vec<FunctionCall> = serde_json::from_value(content.clone())?;
+
+                    chat_history.push(Message {
+                        message_type: MessageType::FunctionCall,
+                        content: String::new(),
+                        api: api.clone(),
+                        system_prompt: String::new(),
+                        tool_call_id: None,
+                        tool_calls: Some(tool_calls.clone()),
+                        name: Some("?".to_string()),
+                    });
+
+                    for call in tool_calls {
+                        println!(
+                            "calling tool {}({})...",
+                            call.function.name, call.function.arguments
+                        );
+                        let tool = tool_map.get(&call.function.name).unwrap().clone();
+                        let tool_args: serde_json::Value =
+                            serde_json::from_str(&call.function.arguments)?;
+
+                        let function_output = tokio::task::spawn_blocking(move || {
+                            tool.function.call(tool_args).to_string()
+                        })
+                        .await?;
+
+                        chat_history.push(Message {
+                            message_type: MessageType::FunctionCallOutput,
+                            content: function_output,
+                            api: api.clone(),
+                            system_prompt: system_prompt.to_string(),
+                            tool_call_id: Some(call.id),
+                            tool_calls: None,
+                            name: None,
+                        });
+                    }
+                }
             }
+            API::Anthropic(_) => {
+                let stop_reason = response_json
+                    .get("stop_reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap();
 
-            println!("normal response: {}", content);
+                // Normal response == no tool calls
+                if stop_reason != "tool_use" {
+                    calling_tools = false;
 
-            // TODO: A normal response...
-        } else {
-            // name -> tool
-            let tool_map: std::collections::HashMap<_, _> =
-                tools.iter().map(|t| (t.name.clone(), t)).collect();
+                    let mut content = read_json_response(&api, &response_json)?;
+                    content = unescape(&content);
+                    if content.starts_with("\"") && content.ends_with("\"") {
+                        content = content[1..content.len() - 1].to_string();
+                    }
 
-            let content = response_json
-                .get("choices")
-                .and_then(|v| v.get(0))
-                .and_then(|v| v.get("tool_calls"))
-                .ok_or_else(|| "Missing both content and tool calls")?;
+                    chat_history.push(Message {
+                        message_type: MessageType::Assistant,
+                        content,
+                        api: api.clone(),
+                        system_prompt: system_prompt.to_string(),
+                        tool_call_id: None,
+                        tool_calls: None,
+                        name: None,
+                    });
+                } else {
+                    // name -> tool
+                    let tool_map: std::collections::HashMap<_, _> =
+                        tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
 
-            let tool_calls: Vec<FunctionCall> = serde_json::from_value(content.clone())?;
+                    let content = response_json
+                        .get("content")
+                        .ok_or_else(|| "Missing both content and tool calls")?
+                        .as_array();
 
-            chat_history.push(Message {
-                message_type: MessageType::FunctionCall,
-                content: String::new(),
-                api: api.clone(),
-                system_prompt: String::new(),
-                tool_call_id: None,
-                tool_calls: Some(tool_calls.clone()),
-            });
+                    let text_content: String = content
+                        .unwrap_or(&Vec::new())
+                        .iter()
+                        .filter(|item| item["type"] == "text")
+                        .filter_map(|text| text["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("");
 
-            for call in tool_calls {
-                let tool = tool_map.get(&call.function.name).unwrap();
-                let tool_args: serde_json::Value = serde_json::from_str(&call.function.arguments)?;
+                    let tool_calls: Vec<FunctionCall> = content
+                        .unwrap_or(&Vec::new())
+                        .iter()
+                        .filter(|item| item["type"] == "tool_use")
+                        .map(|tool_use| FunctionCall {
+                            id: tool_use["id"].as_str().unwrap_or_default().to_string(),
+                            call_type: "function".to_string(),
+                            function: Function {
+                                name: tool_use["name"].as_str().unwrap_or_default().to_string(),
+                                arguments: tool_use["input"].to_string(),
+                            },
+                        })
+                        .collect();
 
-                chat_history.push(Message {
-                    message_type: MessageType::FunctionCallOutput,
-                    content: tool.function.call(tool_args).to_string(),
-                    api: api.clone(),
-                    system_prompt: system_prompt.to_string(),
-                    tool_call_id: Some(call.id),
-                    tool_calls: None,
-                });
+                    chat_history.push(Message {
+                        message_type: MessageType::Assistant,
+                        content: text_content,
+                        api: api.clone(),
+                        system_prompt: String::new(),
+                        tool_call_id: None,
+                        tool_calls: Some(tool_calls.clone()),
+                        name: Some("?".to_string()),
+                    });
+
+                    for call in tool_calls {
+                        println!(
+                            "calling tool {}({})...",
+                            call.function.name, call.function.arguments
+                        );
+                        let tool = tool_map.get(&call.function.name).unwrap().clone();
+                        let tool_args: serde_json::Value =
+                            serde_json::from_str(&call.function.arguments)?;
+
+                        let function_output = tokio::task::spawn_blocking(move || {
+                            tool.function.call(tool_args).to_string()
+                        })
+                        .await?;
+
+                        chat_history.push(Message {
+                            message_type: MessageType::FunctionCallOutput,
+                            content: function_output,
+                            api: api.clone(),
+                            system_prompt: system_prompt.to_string(),
+                            tool_call_id: Some(call.id),
+                            tool_calls: None,
+                            name: None,
+                        });
+                    }
+                }
             }
-
-            println!("chat history after tool calling: {:?}", chat_history);
+            _ => {}
         }
     }
 
-    Ok(())
+    Ok(chat_history)
 }
 
 /// The same as `prompt`, but for hitting a local endpoint
@@ -746,6 +978,7 @@ pub async fn prompt_local(
         system_prompt: system_prompt.to_string(),
         tool_calls: None,
         tool_call_id: None,
+        name: None,
     })
 }
 
@@ -764,6 +997,7 @@ mod tests {
             system_prompt: "test system prompt".to_string(),
             tool_calls: None,
             tool_call_id: None,
+            name: None,
         }
     }
 
@@ -886,6 +1120,7 @@ mod tests {
             system_prompt.to_string(),
             api.clone(),
             &chat_history,
+            None,
             false,
         );
 
@@ -907,6 +1142,7 @@ mod tests {
             system_prompt: system_prompt.to_string(),
             tool_calls: None,
             tool_call_id: None,
+            name: None,
         }];
 
         let params =

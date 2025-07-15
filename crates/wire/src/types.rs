@@ -36,7 +36,7 @@ pub enum API {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OpenAIModel {
-    #[serde(rename = "gpt-4o")]
+    #[serde(rename = "gpt-4.1")]
     GPT4o,
     #[serde(rename = "gpt-4o-mini")]
     GPT4oMini,
@@ -179,6 +179,7 @@ pub struct Function {
 pub struct Message {
     // TODO: This gets mapped to `role` in `build_request` and should be more clearly named
     pub message_type: MessageType,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub content: String,
     pub api: API,
     // TODO: Do we really need this with _every_ message?
@@ -191,6 +192,9 @@ pub struct Message {
     // Tool call results--actual result content will be in `content` if this isn't None
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 pub trait ToolFunction: Send + Sync {

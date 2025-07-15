@@ -6,7 +6,7 @@ use crate::types::{Message, Tool, API};
 
 pub mod prelude {
     pub use crate::types::{Tool, ToolWrapper};
-    pub use wire_macros::get_tool_from_function;
+    pub use wire_macros::{get_tool, tool};
 }
 
 // TODO: there probably needs to be a better determination
@@ -119,7 +119,7 @@ pub async fn prompt_with_tools(
     system_prompt: &str,
     chat_history: Vec<Message>,
     tools: Vec<Tool>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
     let response =
         match network::prompt_with_tools(api.clone(), system_prompt, chat_history, tools).await {
             Ok(r) => r,

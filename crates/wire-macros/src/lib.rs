@@ -1,81 +1,147 @@
 use proc_macro::TokenStream;
-use quote::{ToTokens, format_ident, quote};
-use syn::{FnArg, ItemFn, Type, parse_macro_input};
+use quote::{format_ident, quote};
+use serde_json::json;
+use std::path::Path;
+use syn::{FnArg, ItemFn, Lit, Meta, Pat, ReturnType, Type, parse_macro_input};
 
-// TODO: This _needs_ rectified with the vizier macro because this doesn't work and that one does
-#[proc_macro]
-pub fn get_tool_from_function(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input with syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated)
-        .into_iter()
-        .collect::<Vec<_>>();
+#[proc_macro_attribute]
+pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(item as ItemFn);
+    let fn_name = &input_fn.sig.ident;
 
-    if input.len() != 2 {
-        panic!("Expected function name and description");
-    }
-
-    let func = &input[0];
-    let description = if let syn::Expr::Lit(lit) = &input[1] {
-        if let syn::Lit::Str(s) = &lit.lit {
-            s.value()
-        } else {
-            panic!("Expected string literal for description");
+    let attrs = parse_macro_input!(attr as syn::AttributeArgs);
+    let description = attrs.iter().find_map(|arg| {
+        if let syn::NestedMeta::Meta(Meta::NameValue(nv)) = arg {
+            if nv.path.is_ident("description") {
+                if let Lit::Str(lit_str) = &nv.lit {
+                    return Some(lit_str.value());
+                }
+            }
         }
-    } else {
-        panic!("Expected string literal for description");
-    };
+        None
+    }).expect("The #[tool] attribute requires a `description` argument, e.g., #[tool(description = \"...\")]");
 
-    let func_name = if let syn::Expr::Path(path) = func {
-        path.path.segments.last().unwrap().ident.to_string()
-    } else {
-        panic!("Expected function name");
-    };
-
-    let mut properties = std::collections::HashMap::new();
-
-    let func_name_str = func_name.to_string();
-    let func_item: ItemFn =
-        syn::parse_str(&format!("{}", quote! { #func })).expect("Failed to parse function");
-
-    for arg in func_item.sig.inputs.iter() {
-        println!("CHECK 2");
+    let mut properties = serde_json::Map::new();
+    for arg in &input_fn.sig.inputs {
         if let FnArg::Typed(pat_type) = arg {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+            if let Pat::Ident(pat_ident) = &*pat_type.pat {
                 let arg_name = pat_ident.ident.to_string();
-                println!("arg name: {}", arg_name);
-                let arg_type = match &*pat_type.ty {
-                    Type::Path(type_path) => {
-                        let type_name = type_path.path.segments.last().unwrap().ident.to_string();
-                        match type_name.as_str() {
-                            "String" => "string",
-                            "i32" | "i64" => "integer",
-                            "f32" | "f64" => "number",
-                            "bool" => "boolean",
-                            _ => "object",
-                        }
+                let arg_type_str = if let Type::Path(type_path) = &*pat_type.ty {
+                    let type_name = type_path.path.segments.last().unwrap().ident.to_string();
+                    match type_name.as_str() {
+                        "String" => "string",
+                        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => "integer",
+                        "f32" | "f64" => "number",
+                        "bool" => "boolean",
+                        _ => "object", // Default for complex types
                     }
-                    _ => "object",
+                } else {
+                    "object"
                 };
-                properties.insert(arg_name, arg_type);
+                properties.insert(arg_name, json!({ "type": arg_type_str }));
             }
         }
     }
 
-    // Convert the properties to a string representation
-    let parameters_json = serde_json::to_string(&serde_json::json!({
-        "type": "object",
-        "properties": properties
-    }))
-    .unwrap();
+    let metadata = json!({
+        "name": fn_name.to_string(),
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+        }
+    });
 
-    let wrapper_name = format_ident!("{}_wrapper", func_name);
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR environment variable not set");
+    let metadata_path = Path::new(&out_dir).join(format!("{}.json", fn_name));
+    std::fs::write(
+        metadata_path,
+        serde_json::to_string_pretty(&metadata).unwrap(),
+    )
+    .expect("Failed to write tool metadata file");
+
+    let wrapper_name = format_ident!("{}_wrapper", fn_name);
+
+    let args: Vec<_> = input_fn
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                    return Some((pat_ident.ident.clone(), pat_type.ty.clone()));
+                }
+            }
+            None
+        })
+        .collect();
+
+    let deserialization_lines = args.iter().map(|(name, ty)| {
+        let name_str = name.to_string();
+        quote! {
+            let #name: #ty = serde_json::from_value(args[#name_str].clone())
+                .unwrap_or_else(|e| panic!("Failed to deserialize argument '{}' for tool '{}': {}", #name_str, stringify!(#fn_name), e));
+        }
+    });
+
+    let arg_names = args.iter().map(|(name, _)| name);
+
+    let return_handling = match &input_fn.sig.output {
+        ReturnType::Default => quote! {
+            #fn_name(#(#arg_names),*);
+            serde_json::json!({ "status": "success" })
+        },
+        ReturnType::Type(_, ty) => quote! {
+            let result: #ty = #fn_name(#(#arg_names),*);
+            serde_json::to_value(result).expect("Failed to serialize return value")
+        },
+    };
 
     quote! {
-        Tool {
-            function_type: "function".to_string(),
-            name: #func_name.to_string(),
-            description: #description.to_string(),
-            parameters: serde_json::from_str(#parameters_json).unwrap(),
-            function: Box::new(ToolWrapper(#wrapper_name)),
+        #input_fn
+
+        pub fn #wrapper_name(args: serde_json::Value) -> serde_json::Value {
+            #(#deserialization_lines)*
+            #return_handling
+        }
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn get_tool(input: TokenStream) -> TokenStream {
+    let fn_name_ident = parse_macro_input!(input as syn::Ident);
+    let fn_name_str = fn_name_ident.to_string();
+
+    // Construct the path to the metadata file generated by the #[tool] macro
+    let metadata_file_path = format!("{}/{}.json", std::env::var("OUT_DIR").unwrap(), fn_name_str);
+
+    // Read the metadata at compile time. Panics if the file doesn't exist,
+    // which is the desired behavior (e.g., you forgot to add #[tool]).
+    let metadata_str = std::fs::read_to_string(&metadata_file_path)
+        .unwrap_or_else(|_| panic!("Metadata file not found for tool '{}'. Did you forget to add the `#[tool]` attribute to the function?", fn_name_str));
+
+    // The wrapper function name that will be called by the Tool
+    let wrapper_name = format_ident!("{}_wrapper", fn_name_str);
+
+    // Generate the Tool struct, parsing the metadata string at runtime.
+    // The `function` field points to the wrapper you would define in your main code.
+    quote! {
+        {
+            // Assume Tool and ToolWrapper structs are defined in the calling crate
+            Tool {
+                name: #fn_name_str.to_string(),
+                function_type: "function".to_string(),
+                description: {
+                    let data: serde_json::Value = serde_json::from_str(#metadata_str).unwrap();
+                    data["description"].as_str().unwrap().to_string()
+                },
+                parameters: {
+                    let data: serde_json::Value = serde_json::from_str(#metadata_str).unwrap();
+                    data["parameters"].clone()
+                },
+                function: Box::new(ToolWrapper(#wrapper_name)),
+            }
         }
     }
     .into()
