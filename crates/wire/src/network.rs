@@ -734,6 +734,7 @@ pub async fn prompt(
 }
 
 pub async fn prompt_with_tools(
+    tx: Option<tokio::sync::mpsc::Sender<String>>,
     api: API,
     system_prompt: &str,
     mut chat_history: Vec<Message>,
@@ -757,6 +758,7 @@ pub async fn prompt_with_tools(
 
         let response_json: serde_json::Value = serde_json::from_str(&body)?;
 
+        // TODO: This is gross. We can't break this apart?
         match api {
             API::OpenAI(_) => {
                 let content = response_json
@@ -786,7 +788,7 @@ pub async fn prompt_with_tools(
                     });
                 } else {
                     // name -> tool
-                    let tool_map: std::collections::HashMap<_, _> =
+                    let tool_map: std::collections::HashMap<String, Tool> =
                         tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
 
                     let content = response_json
@@ -809,10 +811,12 @@ pub async fn prompt_with_tools(
                     });
 
                     for call in tool_calls {
-                        println!(
-                            "calling tool {}({})...",
-                            call.function.name, call.function.arguments
-                        );
+                        if let Some(t) = &tx {
+                            t.send(format!("calling tool {}...", call.function.name))
+                                .await
+                                .unwrap();
+                        }
+
                         let tool = tool_map.get(&call.function.name).unwrap().clone();
                         let tool_args: serde_json::Value =
                             serde_json::from_str(&call.function.arguments)?;
@@ -834,6 +838,7 @@ pub async fn prompt_with_tools(
                     }
                 }
             }
+            // TODO: We're seeing scattered errors here with function calls and the stop reason
             API::Anthropic(_) => {
                 let stop_reason = response_json
                     .get("stop_reason")
@@ -862,7 +867,7 @@ pub async fn prompt_with_tools(
                     });
                 } else {
                     // name -> tool
-                    let tool_map: std::collections::HashMap<_, _> =
+                    let tool_map: std::collections::HashMap<String, Tool> =
                         tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
 
                     let content = response_json
@@ -903,10 +908,12 @@ pub async fn prompt_with_tools(
                     });
 
                     for call in tool_calls {
-                        println!(
-                            "calling tool {}({})...",
-                            call.function.name, call.function.arguments
-                        );
+                        if let Some(t) = &tx {
+                            t.send(format!("calling tool {}...", call.function.name))
+                                .await
+                                .unwrap();
+                        }
+
                         let tool = tool_map.get(&call.function.name).unwrap().clone();
                         let tool_args: serde_json::Value =
                             serde_json::from_str(&call.function.arguments)?;

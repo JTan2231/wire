@@ -121,7 +121,30 @@ pub async fn prompt_with_tools(
     tools: Vec<Tool>,
 ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
     let response =
-        match network::prompt_with_tools(api.clone(), system_prompt, chat_history, tools).await {
+        match network::prompt_with_tools(None, api.clone(), system_prompt, chat_history, tools)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                println!("error prompting LLM: {}", e);
+                return Err(e);
+            }
+        };
+
+    Ok(response)
+}
+
+pub async fn prompt_with_tools_and_status(
+    tx: tokio::sync::mpsc::Sender<String>,
+    api: API,
+    system_prompt: &str,
+    chat_history: Vec<Message>,
+    tools: Vec<Tool>,
+) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+    let response =
+        match network::prompt_with_tools(Some(tx), api.clone(), system_prompt, chat_history, tools)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 println!("error prompting LLM: {}", e);
