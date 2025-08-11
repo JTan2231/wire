@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn test_get_anthropic_params() {
         setup_test_environment();
-        let api = API::Anthropic(AnthropicModel::Claude35Sonnet);
+        let api = API::Anthropic(AnthropicModel::Claude35SonnetNew);
         let chat_history = create_mock_chat_history();
         let system_prompt = "test system";
 
@@ -1186,7 +1186,7 @@ mod tests {
 
         let anthropic_params = get_params(
             system_prompt,
-            API::Anthropic(AnthropicModel::Claude35Sonnet),
+            API::Anthropic(AnthropicModel::Claude35SonnetNew),
             &chat_history,
             None,
             false,

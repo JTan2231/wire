@@ -36,6 +36,8 @@ pub enum API {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OpenAIModel {
+    #[serde(rename = "gpt-5")]
+    GPT5,
     #[serde(rename = "gpt-4.1")]
     GPT4o,
     #[serde(rename = "gpt-4o-mini")]
@@ -48,16 +50,24 @@ pub enum OpenAIModel {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AnthropicModel {
-    #[serde(rename = "claude-3-opus-20240229")]
-    Claude3Opus,
-    #[serde(rename = "claude-3-sonnet-20240229")]
-    Claude3Sonnet,
+    #[serde(rename = "claude-opus-4-1-20250805")]
+    ClaudeOpus41,
+    #[serde(rename = "claude-opus-4-20250514")]
+    ClaudeOpus4,
+    #[serde(rename = "claude-sonnet-4-20250514")]
+    ClaudeSonnet4,
+    #[serde(rename = "claude-3-7-sonnet-20250219")]
+    Claude37Sonnet,
+    #[serde(rename = "claude-3-5-sonnet-20241022")]
+    Claude35SonnetNew,
+    #[serde(rename = "claude-3-5-haiku-20241022")]
+    Claude35Haiku,
+    #[serde(rename = "claude-3-5-sonnet-20240620")]
+    Claude35SonnetOld,
     #[serde(rename = "claude-3-haiku-20240307")]
     Claude3Haiku,
-    #[serde(rename = "claude-3-5-sonnet-latest")]
-    Claude35Sonnet,
-    #[serde(rename = "claude-3-5-haiku-latest")]
-    Claude35Haiku,
+    #[serde(rename = "claude-3-opus-20240229")]
+    Claude3Opus,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -77,6 +87,7 @@ impl API {
         match provider {
             "openai" => {
                 let model = match model {
+                    "gpt-5" => OpenAIModel::GPT5,
                     "gpt-4o" => OpenAIModel::GPT4o,
                     "gpt-4o-mini" => OpenAIModel::GPT4oMini,
                     "o1-preview" => OpenAIModel::O1Preview,
@@ -87,11 +98,15 @@ impl API {
             }
             "anthropic" => {
                 let model = match model {
-                    "claude-3-opus-20240229" => AnthropicModel::Claude3Opus,
-                    "claude-3-sonnet-20240229" => AnthropicModel::Claude3Sonnet,
+                    "claude-opus-4-1-20250805" => AnthropicModel::ClaudeOpus41,
+                    "claude-opus-4-20250514" => AnthropicModel::ClaudeOpus4,
+                    "claude-sonnet-4-20250514" => AnthropicModel::ClaudeSonnet4,
+                    "claude-3-7-sonnet-20250219" => AnthropicModel::Claude37Sonnet,
+                    "claude-3-5-sonnet-20241022" => AnthropicModel::Claude35SonnetNew,
+                    "claude-3-5-haiku-20241022" => AnthropicModel::Claude35Haiku,
+                    "claude-3-5-sonnet-20240620" => AnthropicModel::Claude35SonnetOld,
                     "claude-3-haiku-20240307" => AnthropicModel::Claude3Haiku,
-                    "claude-3-5-sonnet-latest" => AnthropicModel::Claude35Sonnet,
-                    "claude-3-5-haiku-latest" => AnthropicModel::Claude35Haiku,
+                    "claude-3-opus-20240229" => AnthropicModel::Claude3Opus,
                     _ => return Err(format!("Unknown Anthropic model: {}", model)),
                 };
                 Ok(API::Anthropic(model))
@@ -114,6 +129,7 @@ impl API {
         match self {
             API::OpenAI(model) => {
                 let model_str = match model {
+                    OpenAIModel::GPT5 => "gpt-5",
                     OpenAIModel::GPT4o => "gpt-4o",
                     OpenAIModel::GPT4oMini => "gpt-4o-mini",
                     OpenAIModel::O1Preview => "o1-preview",
@@ -123,11 +139,15 @@ impl API {
             }
             API::Anthropic(model) => {
                 let model_str = match model {
-                    AnthropicModel::Claude3Opus => "claude-3-opus-20240229",
-                    AnthropicModel::Claude3Sonnet => "claude-3-sonnet-20240229",
+                    AnthropicModel::ClaudeOpus41 => "claude-opus-4-1-20250805",
+                    AnthropicModel::ClaudeOpus4 => "claude-opus-4-20250514",
+                    AnthropicModel::ClaudeSonnet4 => "claude-sonnet-4-20250514",
+                    AnthropicModel::Claude37Sonnet => "claude-3-7-sonnet-20250219",
+                    AnthropicModel::Claude35SonnetNew => "claude-3-5-sonnet-20241022",
+                    AnthropicModel::Claude35Haiku => "claude-3-5-haiku-20241022",
+                    AnthropicModel::Claude35SonnetOld => "claude-3-5-sonnet-20240620",
                     AnthropicModel::Claude3Haiku => "claude-3-haiku-20240307",
-                    AnthropicModel::Claude35Sonnet => "claude-3-5-sonnet-latest",
-                    AnthropicModel::Claude35Haiku => "claude-3-5-haiku-latest",
+                    AnthropicModel::Claude3Opus => "claude-3-opus-20240229",
                 };
                 ("anthropic".to_string(), model_str.to_string())
             }
