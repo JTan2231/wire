@@ -462,20 +462,11 @@ fn read_json_response(
     }
 }
 
-fn send_delta(
-    tx: &std::sync::mpsc::Sender<String>,
-    delta: String,
-) -> Result<(), std::sync::mpsc::SendError<String>> {
-    match tx.send(delta.clone()) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-fn process_openai_stream(
+// old and soon to be out of date--use the one fit for tools when it's done
+async fn process_openai_stream(
     stream: TlsStream<TcpStream>,
-    tx: &std::sync::mpsc::Sender<String>,
-) -> Result<String, std::io::Error> {
+    tx: &tokio::sync::mpsc::Sender<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let reader = std::io::BufReader::new(stream);
     let mut full_message = String::new();
 
@@ -485,6 +476,8 @@ fn process_openai_stream(
             continue;
         }
 
+        println!("{}", line);
+
         let payload = line[6..].trim();
         if payload.is_empty() || payload == "[DONE]" {
             break;
@@ -493,17 +486,17 @@ fn process_openai_stream(
         let response_json: serde_json::Value = match serde_json::from_str(&payload) {
             Ok(json) => json,
             Err(e) => {
-                return Err(std::io::Error::new(
+                return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     e.to_string(),
-                ));
+                )));
             }
         };
 
         let mut delta = unescape(&response_json["choices"][0]["delta"]["content"].to_string());
         if delta != "null" {
             delta = delta[1..delta.len() - 1].to_string();
-            let _ = send_delta(&tx, delta.clone());
+            tx.send(delta.clone()).await?;
 
             full_message.push_str(&delta);
         }
@@ -512,10 +505,10 @@ fn process_openai_stream(
     Ok(full_message)
 }
 
-fn process_anthropic_stream(
+async fn process_anthropic_stream(
     stream: TlsStream<TcpStream>,
-    tx: &std::sync::mpsc::Sender<String>,
-) -> Result<String, std::io::Error> {
+    tx: &tokio::sync::mpsc::Sender<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let reader = std::io::BufReader::new(stream);
     let mut full_message = String::new();
 
@@ -538,10 +531,10 @@ fn process_anthropic_stream(
         let response_json: serde_json::Value = match serde_json::from_str(&payload) {
             Ok(json) => json,
             Err(e) => {
-                return Err(std::io::Error::new(
+                return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     e.to_string(),
-                ));
+                )));
             }
         };
 
@@ -553,7 +546,7 @@ fn process_anthropic_stream(
         }
 
         if delta != "null" {
-            let _ = send_delta(&tx, delta.clone());
+            tx.send(delta.clone()).await?;
             full_message.push_str(&delta);
         }
     }
@@ -561,10 +554,10 @@ fn process_anthropic_stream(
     Ok(full_message)
 }
 
-fn process_gemini_stream(
+async fn process_gemini_stream(
     stream: TlsStream<TcpStream>,
-    tx: &std::sync::mpsc::Sender<String>,
-) -> Result<String, std::io::Error> {
+    tx: &tokio::sync::mpsc::Sender<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut reader = std::io::BufReader::new(stream);
     let mut accumulated_text = String::new();
     let mut line = String::new();
@@ -628,12 +621,7 @@ fn process_gemini_stream(
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(chunk) {
             if let Some(text) = json["candidates"][0]["content"]["parts"][0]["text"].as_str() {
                 accumulated_text.push_str(text);
-                tx.send(text.to_string()).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to send through channel: {}", e),
-                    )
-                })?;
+                tx.send(text.to_string()).await?;
             }
         }
 
@@ -660,11 +648,11 @@ fn connect_https(host: &str, port: u16) -> native_tls::TlsStream<std::net::TcpSt
 
 /// Function for streaming responses from the LLM.
 /// Decoded tokens are sent through the given sender.
-pub fn prompt_stream(
+pub async fn prompt_stream(
     api: API,
     chat_history: &Vec<Message>,
     system_prompt: &str,
-    tx: std::sync::mpsc::Sender<String>,
+    tx: tokio::sync::mpsc::Sender<String>,
 ) -> Result<Message, Box<dyn std::error::Error>> {
     let params = get_params(system_prompt, api.clone(), chat_history, None, true);
     let request = build_request_raw(&params);
@@ -676,13 +664,9 @@ pub fn prompt_stream(
     stream.flush().expect("Failed to flush stream");
 
     let response = match api {
-        API::Anthropic(_) => process_anthropic_stream(stream, &tx),
-        API::OpenAI(_) => process_openai_stream(stream, &tx),
-        API::Gemini(_) => process_gemini_stream(stream, &tx),
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Unsupported API provider",
-        )),
+        API::Anthropic(_) => process_anthropic_stream(stream, &tx).await,
+        API::OpenAI(_) => process_openai_stream(stream, &tx).await,
+        API::Gemini(_) => process_gemini_stream(stream, &tx).await,
     };
 
     let content = response?;

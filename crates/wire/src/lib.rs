@@ -76,31 +76,33 @@ impl Wire {
     }
 
     // TODO: Support for locally hosted models
-    pub fn prompt_stream(
-        api: API,
-        system_prompt: &str,
-        chat_history: &Vec<Message>,
-        tx: std::sync::mpsc::Sender<String>,
-    ) -> Result<Message, Box<dyn std::error::Error>> {
-        let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx) {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(e);
-            }
-        };
-
-        Ok(response)
-    }
+    // TODO: Clean this up my God
+    // pub fn prompt_stream(
+    //     api: API,
+    //     system_prompt: &str,
+    //     chat_history: &Vec<Message>,
+    //     tx: std::sync::mpsc::Sender<String>,
+    // ) -> Result<Message, Box<dyn std::error::Error>> {
+    //     let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx) {
+    //         Ok(r) => r,
+    //         Err(e) => {
+    //             return Err(e);
+    //         }
+    //     };
+    //
+    //     Ok(response)
+    // }
 }
 
 // TODO: Filthy workaround
-pub fn prompt_stream(
+pub async fn prompt_stream(
     api: API,
     system_prompt: &str,
     chat_history: &Vec<Message>,
-    tx: std::sync::mpsc::Sender<String>,
+    tx: tokio::sync::mpsc::Sender<String>,
 ) -> Result<Message, Box<dyn std::error::Error>> {
-    let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx) {
+    let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx).await
+    {
         Ok(r) => r,
         Err(e) => {
             println!("ERROR: {}", e);
