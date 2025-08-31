@@ -199,9 +199,11 @@ pub struct Function {
 pub struct Message {
     // TODO: This gets mapped to `role` in `build_request` and should be more clearly named
     pub message_type: MessageType,
+
     #[serde(skip_serializing_if = "String::is_empty")]
     pub content: String,
     pub api: API,
+
     // TODO: Do we really need this with _every_ message?
     pub system_prompt: String,
 
@@ -215,6 +217,14 @@ pub struct Message {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+
+    // TODO: These two should probably be somewhere else
+
+    // _Not_ cumulative--per message
+    #[serde(skip)]
+    pub input_tokens: usize,
+    #[serde(skip)]
+    pub output_tokens: usize,
 }
 
 pub trait ToolFunction: Send + Sync {
