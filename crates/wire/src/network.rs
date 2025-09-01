@@ -145,6 +145,13 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
         _ => panic!("Invalid provider for request_body: {}", params.provider),
     };
 
+    // TODO: We need a better way of specifying this, preferably something user-configrable
+    if params.model == "gpt-5" {
+        body["reasoning"] = serde_json::json!({
+            "effort": "minimal",
+        });
+    }
+
     if let Some(tools) = &params.tools {
         let tools_mapped = tools
             .iter()
