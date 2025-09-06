@@ -147,9 +147,7 @@ fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::R
 
     // TODO: We need a better way of specifying this, preferably something user-configrable
     if params.model == "gpt-5" {
-        body["reasoning"] = serde_json::json!({
-            "effort": "minimal",
-        });
+        body["reasoning_effort"] = "minimal".into();
     }
 
     if let Some(tools) = &params.tools {
