@@ -3,6 +3,7 @@ use std::env;
 use std::io::{BufRead, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 
+use crate::api::API;
 use crate::types::*;
 
 // TODO: This would probably be better off as a builder
@@ -814,7 +815,7 @@ pub async fn prompt_with_tools(
                         system_prompt: String::new(),
                         tool_call_id: None,
                         tool_calls: Some(tool_calls.clone()),
-                        name: Some("?".to_string()),
+                        name: None,
                         input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as usize,
                         output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as usize,
                     });
@@ -842,8 +843,7 @@ pub async fn prompt_with_tools(
                             system_prompt: system_prompt.to_string(),
                             tool_call_id: Some(call.id),
                             tool_calls: None,
-                            name: None,
-                            // TODO: Implement
+                            name: Some(tool.name),
                             input_tokens: 0,
                             output_tokens: 0,
                         });

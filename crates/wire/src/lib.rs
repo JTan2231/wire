@@ -1,8 +1,14 @@
+mod api;
+mod openai;
+
 mod network;
+mod network_common;
+
 mod tiktoken;
 pub mod types;
 
-use crate::types::{Message, Tool, API};
+use api::API;
+use types::{Message, Tool};
 
 pub mod prelude {
     pub use crate::types::{Tool, ToolWrapper};
