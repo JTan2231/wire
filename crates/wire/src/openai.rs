@@ -28,6 +28,7 @@ pub struct OpenAIClient {
     pub path: String,
 }
 
+#[async_trait::async_trait]
 impl Prompt for OpenAIClient {
     fn get_auth_token() -> String {
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set")

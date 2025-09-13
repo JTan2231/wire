@@ -3,6 +3,7 @@ use std::net::TcpStream;
 
 use crate::types::{Message, Tool};
 
+#[async_trait::async_trait]
 pub trait Prompt: Send + Sync {
     fn get_auth_token() -> String;
 

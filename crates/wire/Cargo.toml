@@ -16,3 +16,4 @@ serde_json = "1.0.133"
 tokio = "1.44.1"
 wiremock = "0.6.3"
 wire-macros = { path = "../wire-macros" }
+async-trait = "0.1.89"

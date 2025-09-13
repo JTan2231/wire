@@ -6,6 +6,8 @@ use std::net::{TcpStream, ToSocketAddrs};
 use crate::api::API;
 use crate::types::*;
 
+// TODO: Need to move the other providers into trait-specific implementations
+
 // TODO: This would probably be better off as a builder
 fn build_request(client: &reqwest::Client, params: &RequestParams) -> reqwest::RequestBuilder {
     // TODO: There has to be a more efficient way of dealing with this
@@ -693,44 +695,6 @@ pub async fn prompt_stream(
     })
 }
 
-/// Ad-hoc prompting for an LLM
-/// Makes zero expectations about the state of the conversation
-/// and returns a tuple of (response message, usage from the prompt)
-pub async fn prompt(
-    api: API,
-    system_prompt: &str,
-    chat_history: &Vec<Message>,
-) -> Result<Message, Box<dyn std::error::Error>> {
-    let params = get_params(system_prompt, api.clone(), chat_history, None, false);
-    let client = reqwest::Client::new();
-
-    let response = build_request(&client, &params).send().await?;
-    // NOTE: I guess anthropic's response doesn't work with `.json()`?
-    let body = response.text().await?;
-
-    let response_json: serde_json::Value = serde_json::from_str(&body)?;
-
-    let mut content = read_json_response(&api, &response_json)?;
-
-    content = unescape(&content);
-    if content.starts_with("\"") && content.ends_with("\"") {
-        content = content[1..content.len() - 1].to_string();
-    }
-
-    Ok(Message {
-        message_type: MessageType::Assistant,
-        content,
-        api,
-        system_prompt: system_prompt.to_string(),
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-        // TODO: Implement
-        input_tokens: 0,
-        output_tokens: 0,
-    })
-}
-
 pub async fn prompt_with_tools(
     tx: Option<tokio::sync::mpsc::Sender<String>>,
     api: API,
@@ -962,54 +926,4 @@ pub async fn prompt_with_tools(
     }
 
     Ok(chat_history)
-}
-
-/// The same as `prompt`, but for hitting a local endpoint
-/// NOTE: This _always_ assumes that the endpoint matches OpenAI's API specification
-pub async fn prompt_local(
-    host: &str,
-    port: u16,
-    api: API,
-    system_prompt: &str,
-    chat_history: &Vec<Message>,
-) -> Result<Message, Box<dyn std::error::Error>> {
-    let mut params = get_openai_request_params(
-        system_prompt.to_string(),
-        api.clone(),
-        chat_history,
-        None,
-        false,
-    );
-
-    // Overriding these with mock parameters
-    params.host = host.to_string();
-    params.port = port;
-    params.max_tokens = Some(0);
-    params.system_prompt = Some(system_prompt.to_string());
-
-    let client = reqwest::Client::new();
-
-    let response = build_request(&client, &params).send().await?;
-    let body = response.text().await?;
-    let response_json: serde_json::Value = serde_json::from_str(&body)?;
-
-    let mut content = read_json_response(&api, &response_json)?;
-
-    content = unescape(&content);
-    if content.starts_with("\"") && content.ends_with("\"") {
-        content = content[1..content.len() - 1].to_string();
-    }
-
-    Ok(Message {
-        message_type: MessageType::Assistant,
-        content,
-        api,
-        system_prompt: system_prompt.to_string(),
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-        // TODO: Implement
-        input_tokens: 0,
-        output_tokens: 0,
-    })
 }
