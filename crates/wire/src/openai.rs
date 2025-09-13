@@ -28,6 +28,18 @@ pub struct OpenAIClient {
     pub path: String,
 }
 
+impl OpenAIClient {
+    pub fn new(model: OpenAIModel) -> Self {
+        Self {
+            http_client: reqwest::Client::new(),
+            model,
+            host: "api.openai.com".to_string(),
+            port: 443,
+            path: "/v1/chat/completions".to_string(),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Prompt for OpenAIClient {
     fn get_auth_token() -> String {
