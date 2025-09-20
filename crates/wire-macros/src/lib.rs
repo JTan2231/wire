@@ -79,8 +79,12 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     let deserialization_lines = args.iter().map(|(name, ty)| {
         let name_str = name.to_string();
         quote! {
-            let #name: #ty = serde_json::from_value(args[#name_str].clone())
-                .unwrap_or_else(|e| panic!("Failed to deserialize argument '{}' for tool '{}': {}", #name_str, stringify!(#fn_name), e));
+            let #name: #ty = if args[#name_str].is_null() {
+                Default::default()
+            } else {
+                serde_json::from_value(args[#name_str].clone())
+                    .unwrap_or_else(|e| panic!("Failed to deserialize argument '{}' for tool '{}': {}", #name_str, stringify!(#fn_name), e))
+            };
         }
     });
 
