@@ -5,9 +5,20 @@ use std::net::TcpStream;
 use crate::api::{OpenAIModel, Prompt};
 use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::*;
-use crate::types::{Message, MessageType, Tool};
+use crate::types::{Message, MessageBuilder, MessageType, Tool};
 
 impl OpenAIModel {
+    pub fn from_model_name(model: &str) -> Result<Self, String> {
+        match model {
+            "gpt-5" => Ok(OpenAIModel::GPT5),
+            "gpt-4o" => Ok(OpenAIModel::GPT4o),
+            "gpt-4o-mini" => Ok(OpenAIModel::GPT4oMini),
+            "o1-preview" => Ok(OpenAIModel::O1Preview),
+            "o1-mini" => Ok(OpenAIModel::O1Mini),
+            _ => Err(format!("Unknown OpenAI model: {}", model)),
+        }
+    }
+
     pub fn to_strings(&self) -> (String, String) {
         let model_str = match self {
             OpenAIModel::GPT5 => "gpt-5",
@@ -21,6 +32,26 @@ impl OpenAIModel {
     }
 }
 
+impl std::str::FromStr for OpenAIModel {
+    type Err = String;
+
+    fn from_str(model: &str) -> Result<Self, Self::Err> {
+        OpenAIModel::from_model_name(model)
+    }
+}
+
+impl<'a> From<&'a str> for OpenAIModel {
+    fn from(model: &'a str) -> Self {
+        OpenAIModel::from_model_name(model).unwrap_or_else(|err| panic!("{err}"))
+    }
+}
+
+impl From<String> for OpenAIModel {
+    fn from(model: String) -> Self {
+        OpenAIModel::from_model_name(&model).unwrap_or_else(|err| panic!("{err}"))
+    }
+}
+
 pub struct OpenAIClient {
     pub http_client: reqwest::Client,
     pub model: OpenAIModel,
@@ -31,11 +62,18 @@ pub struct OpenAIClient {
 }
 
 impl OpenAIClient {
-    pub fn new(model: OpenAIModel) -> Self {
+    pub fn new<M>(model: M) -> Self
+    where
+        M: Into<OpenAIModel>,
+    {
         Self::with_options(model, ClientOptions::default())
     }
 
-    pub fn with_options(model: OpenAIModel, options: ClientOptions) -> Self {
+    pub fn with_options<M>(model: M, options: ClientOptions) -> Self
+    where
+        M: Into<OpenAIModel>,
+    {
+        let model = model.into();
         let mut client = Self {
             http_client: reqwest::Client::new(),
             model,
@@ -47,6 +85,13 @@ impl OpenAIClient {
 
         client.apply_options(options);
         client
+    }
+
+    pub fn new_message<S>(&self, content: S) -> MessageBuilder
+    where
+        S: Into<String>,
+    {
+        MessageBuilder::new(crate::api::API::OpenAI(self.model.clone()), content)
     }
 
     fn apply_options(&mut self, options: ClientOptions) {

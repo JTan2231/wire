@@ -88,6 +88,153 @@ pub struct Message {
     pub output_tokens: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct MessageBuilder {
+    api: API,
+    content: String,
+    message_type: MessageType,
+    system_prompt: String,
+    tool_calls: Option<Vec<FunctionCall>>,
+    tool_call_id: Option<String>,
+    name: Option<String>,
+    input_tokens: usize,
+    output_tokens: usize,
+}
+
+impl MessageBuilder {
+    pub fn new<S>(api: API, content: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            api,
+            content: content.into(),
+            message_type: MessageType::User,
+            system_prompt: String::new(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    pub fn content<S>(mut self, content: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.content = content.into();
+        self
+    }
+
+    pub fn message_type(mut self, message_type: MessageType) -> Self {
+        self.message_type = message_type;
+        self
+    }
+
+    pub fn as_system(self) -> Self {
+        self.message_type(MessageType::System)
+    }
+
+    pub fn as_user(self) -> Self {
+        self.message_type(MessageType::User)
+    }
+
+    pub fn as_assistant(self) -> Self {
+        self.message_type(MessageType::Assistant)
+    }
+
+    pub fn as_function_call(self) -> Self {
+        self.message_type(MessageType::FunctionCall)
+    }
+
+    pub fn as_tool_output(self) -> Self {
+        self.message_type(MessageType::FunctionCallOutput)
+    }
+
+    pub fn with_system_prompt<S>(mut self, system_prompt: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.system_prompt = system_prompt.into();
+        self
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Vec<FunctionCall>) -> Self {
+        self.tool_calls = Some(tool_calls);
+        self
+    }
+
+    pub fn with_tool_call_id<S>(mut self, tool_call_id: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.tool_call_id = Some(tool_call_id.into());
+        self
+    }
+
+    pub fn with_name<S>(mut self, name: S) -> Self
+    where
+        S: Into<String>,
+    {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn with_usage(mut self, input_tokens: usize, output_tokens: usize) -> Self {
+        self.input_tokens = input_tokens;
+        self.output_tokens = output_tokens;
+        self
+    }
+
+    pub fn build(self) -> Message {
+        Message {
+            message_type: self.message_type,
+            content: self.content,
+            api: self.api,
+            system_prompt: self.system_prompt,
+            tool_calls: self.tool_calls,
+            tool_call_id: self.tool_call_id,
+            name: self.name,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+        }
+    }
+
+    pub fn with_tools(self, tools: Vec<Tool>) -> MessageWithTools {
+        MessageWithTools {
+            message: self.build(),
+            tools,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MessageWithTools {
+    pub message: Message,
+    pub tools: Vec<Tool>,
+}
+
+impl MessageWithTools {
+    pub fn into_parts(self) -> (Message, Vec<Tool>) {
+        (self.message, self.tools)
+    }
+
+    pub fn message(&self) -> &Message {
+        &self.message
+    }
+
+    pub fn tools(&self) -> &[Tool] {
+        &self.tools
+    }
+}
+
+impl From<MessageWithTools> for (Message, Vec<Tool>) {
+    fn from(bundle: MessageWithTools) -> Self {
+        bundle.into_parts()
+    }
+}
+
 pub trait ToolFunction: Send + Sync {
     fn call(&self, args: serde_json::Value) -> serde_json::Value;
     fn clone_box(&self) -> Box<dyn ToolFunction>;

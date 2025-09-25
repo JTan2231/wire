@@ -5,7 +5,50 @@ use std::net::TcpStream;
 use crate::api::{GeminiModel, Prompt};
 use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::{connect_https, unescape};
-use crate::types::{Message, MessageType, Tool};
+use crate::types::{Message, MessageBuilder, MessageType, Tool};
+
+impl GeminiModel {
+    pub fn from_model_name(model: &str) -> Result<Self, String> {
+        match model {
+            "gemini-2.5-flash-preview-04-17" => Ok(GeminiModel::Gemini25ProExp),
+            "gemini-2.0-flash" => Ok(GeminiModel::Gemini20Flash),
+            "gemini-2.0-flash-lite" => Ok(GeminiModel::Gemini20FlashLite),
+            "gemini-embedding-exp" => Ok(GeminiModel::GeminiEmbedding),
+            _ => Err(format!("Unknown Gemini model: {}", model)),
+        }
+    }
+
+    pub fn to_strings(&self) -> (String, String) {
+        let model = match self {
+            GeminiModel::Gemini25ProExp => "gemini-2.5-flash-preview-04-17",
+            GeminiModel::Gemini20Flash => "gemini-2.0-flash",
+            GeminiModel::Gemini20FlashLite => "gemini-2.0-flash-lite",
+            GeminiModel::GeminiEmbedding => "gemini-embedding-exp",
+        };
+
+        ("gemini".to_string(), model.to_string())
+    }
+}
+
+impl std::str::FromStr for GeminiModel {
+    type Err = String;
+
+    fn from_str(model: &str) -> Result<Self, Self::Err> {
+        GeminiModel::from_model_name(model)
+    }
+}
+
+impl<'a> From<&'a str> for GeminiModel {
+    fn from(model: &'a str) -> Self {
+        GeminiModel::from_model_name(model).unwrap_or_else(|err| panic!("{err}"))
+    }
+}
+
+impl From<String> for GeminiModel {
+    fn from(model: String) -> Self {
+        GeminiModel::from_model_name(&model).unwrap_or_else(|err| panic!("{err}"))
+    }
+}
 
 pub struct GeminiClient {
     pub http_client: reqwest::Client,
@@ -16,11 +59,18 @@ pub struct GeminiClient {
 }
 
 impl GeminiClient {
-    pub fn new(model: GeminiModel) -> Self {
+    pub fn new<M>(model: M) -> Self
+    where
+        M: Into<GeminiModel>,
+    {
         Self::with_options(model, ClientOptions::default())
     }
 
-    pub fn with_options(model: GeminiModel, options: ClientOptions) -> Self {
+    pub fn with_options<M>(model: M, options: ClientOptions) -> Self
+    where
+        M: Into<GeminiModel>,
+    {
+        let model = model.into();
         let mut client = Self {
             http_client: reqwest::Client::new(),
             model,
@@ -31,6 +81,13 @@ impl GeminiClient {
 
         client.apply_options(options);
         client
+    }
+
+    pub fn new_message<S>(&self, content: S) -> MessageBuilder
+    where
+        S: Into<String>,
+    {
+        MessageBuilder::new(crate::api::API::Gemini(self.model.clone()), content)
     }
 
     fn apply_options(&mut self, options: ClientOptions) {
@@ -67,7 +124,7 @@ impl GeminiClient {
     }
 
     fn path(&self, stream: bool) -> String {
-        let (_, model) = crate::api::API::Gemini(self.model.clone()).to_strings();
+        let (_, model) = self.model.to_strings();
         format!(
             "/v1beta/models/{}:{}",
             model,

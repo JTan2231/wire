@@ -5,7 +5,60 @@ use std::net::TcpStream;
 use crate::api::{AnthropicModel, Prompt};
 use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::{connect_https, unescape};
-use crate::types::{Message, MessageType, Tool};
+use crate::types::{Message, MessageBuilder, MessageType, Tool};
+
+impl AnthropicModel {
+    pub fn from_model_name(model: &str) -> Result<Self, String> {
+        match model {
+            "claude-opus-4-1-20250805" => Ok(AnthropicModel::ClaudeOpus41),
+            "claude-opus-4-20250514" => Ok(AnthropicModel::ClaudeOpus4),
+            "claude-sonnet-4-20250514" => Ok(AnthropicModel::ClaudeSonnet4),
+            "claude-3-7-sonnet-20250219" => Ok(AnthropicModel::Claude37Sonnet),
+            "claude-3-5-sonnet-20241022" => Ok(AnthropicModel::Claude35SonnetNew),
+            "claude-3-5-haiku-20241022" => Ok(AnthropicModel::Claude35Haiku),
+            "claude-3-5-sonnet-20240620" => Ok(AnthropicModel::Claude35SonnetOld),
+            "claude-3-haiku-20240307" => Ok(AnthropicModel::Claude3Haiku),
+            "claude-3-opus-20240229" => Ok(AnthropicModel::Claude3Opus),
+            _ => Err(format!("Unknown Anthropic model: {}", model)),
+        }
+    }
+
+    pub fn to_strings(&self) -> (String, String) {
+        let model = match self {
+            AnthropicModel::ClaudeOpus41 => "claude-opus-4-1-20250805",
+            AnthropicModel::ClaudeOpus4 => "claude-opus-4-20250514",
+            AnthropicModel::ClaudeSonnet4 => "claude-sonnet-4-20250514",
+            AnthropicModel::Claude37Sonnet => "claude-3-7-sonnet-20250219",
+            AnthropicModel::Claude35SonnetNew => "claude-3-5-sonnet-20241022",
+            AnthropicModel::Claude35Haiku => "claude-3-5-haiku-20241022",
+            AnthropicModel::Claude35SonnetOld => "claude-3-5-sonnet-20240620",
+            AnthropicModel::Claude3Haiku => "claude-3-haiku-20240307",
+            AnthropicModel::Claude3Opus => "claude-3-opus-20240229",
+        };
+
+        ("anthropic".to_string(), model.to_string())
+    }
+}
+
+impl std::str::FromStr for AnthropicModel {
+    type Err = String;
+
+    fn from_str(model: &str) -> Result<Self, Self::Err> {
+        AnthropicModel::from_model_name(model)
+    }
+}
+
+impl<'a> From<&'a str> for AnthropicModel {
+    fn from(model: &'a str) -> Self {
+        AnthropicModel::from_model_name(model).unwrap_or_else(|err| panic!("{err}"))
+    }
+}
+
+impl From<String> for AnthropicModel {
+    fn from(model: String) -> Self {
+        AnthropicModel::from_model_name(&model).unwrap_or_else(|err| panic!("{err}"))
+    }
+}
 
 pub struct AnthropicClient {
     pub http_client: reqwest::Client,
@@ -18,11 +71,18 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
-    pub fn new(model: AnthropicModel) -> Self {
+    pub fn new<M>(model: M) -> Self
+    where
+        M: Into<AnthropicModel>,
+    {
         Self::with_options(model, ClientOptions::default())
     }
 
-    pub fn with_options(model: AnthropicModel, options: ClientOptions) -> Self {
+    pub fn with_options<M>(model: M, options: ClientOptions) -> Self
+    where
+        M: Into<AnthropicModel>,
+    {
+        let model = model.into();
         let mut client = Self {
             http_client: reqwest::Client::new(),
             model,
@@ -35,6 +95,13 @@ impl AnthropicClient {
 
         client.apply_options(options);
         client
+    }
+
+    pub fn new_message<S>(&self, content: S) -> MessageBuilder
+    where
+        S: Into<String>,
+    {
+        MessageBuilder::new(crate::api::API::Anthropic(self.model.clone()), content)
     }
 
     fn apply_options(&mut self, options: ClientOptions) {
@@ -168,7 +235,7 @@ impl Prompt for AnthropicClient {
         tools: Option<Vec<Tool>>,
         stream: bool,
     ) -> reqwest::RequestBuilder {
-        let (_, model) = crate::api::API::Anthropic(self.model.clone()).to_strings();
+        let (_, model) = self.model.to_strings();
         let processed_messages = Self::format_messages(&chat_history);
 
         let mut body = serde_json::json!({
@@ -209,7 +276,7 @@ impl Prompt for AnthropicClient {
         chat_history: Vec<Message>,
         stream: bool,
     ) -> String {
-        let (_, model) = crate::api::API::Anthropic(self.model.clone()).to_strings();
+        let (_, model) = self.model.to_strings();
         let processed_messages = Self::format_messages(&chat_history);
 
         let body = serde_json::json!({

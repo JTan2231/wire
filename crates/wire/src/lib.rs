@@ -14,7 +14,7 @@ use api::API;
 use types::{Message, Tool};
 
 pub mod prelude {
-    pub use crate::types::{Tool, ToolWrapper};
+    pub use crate::types::{MessageBuilder, MessageWithTools, Tool, ToolWrapper};
     pub use wire_macros::{get_tool, tool};
 }
 

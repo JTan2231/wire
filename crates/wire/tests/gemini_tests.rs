@@ -4,20 +4,34 @@ use common::mock_server::{MockJsonResponse, MockLLMServer, MockResponse, MockRou
 use common::{message, raw_request_body, request_body_json};
 use std::panic;
 use temp_env::with_var;
-use wire::api::{GeminiModel, Prompt, API};
+use wire::api::{GeminiModel, Prompt};
 use wire::config::ClientOptions;
 use wire::gemini::GeminiClient;
 use wire::types::MessageType;
 
-fn build_client(model: GeminiModel) -> Option<GeminiClient> {
-    panic::catch_unwind(|| GeminiClient::new(model)).ok()
+fn build_client<M>(model: M) -> Option<GeminiClient>
+where
+    M: Into<GeminiModel>,
+{
+    let model = model.into();
+    panic::catch_unwind(|| GeminiClient::new(model.clone())).ok()
+}
+
+#[test]
+fn gemini_client_new_accepts_model_str() {
+    let client = match build_client("gemini-2.0-flash") {
+        Some(client) => client,
+        None => return,
+    };
+
+    assert_eq!(client.model, GeminiModel::Gemini20Flash);
 }
 
 #[test]
 fn gemini_build_request_uses_expected_shape() {
     std::env::set_var("GEMINI_API_KEY", "gemini-key");
 
-    let client = match build_client(GeminiModel::Gemini20Flash) {
+    let client = match build_client("gemini-2.0-flash") {
         Some(client) => client,
         None => return,
     };
@@ -61,7 +75,7 @@ fn gemini_build_request_uses_expected_shape() {
 fn gemini_build_request_raw_includes_token_and_body() {
     std::env::set_var("GEMINI_API_KEY", "gemini-key");
 
-    let client = match build_client(GeminiModel::Gemini25ProExp) {
+    let client = match build_client("gemini-2.5-flash-preview-04-17") {
         Some(client) => client,
         None => return,
     };
@@ -86,7 +100,7 @@ fn gemini_build_request_raw_includes_token_and_body() {
 
 #[test]
 fn gemini_read_json_response_extracts_text() {
-    let client = match build_client(GeminiModel::Gemini20FlashLite) {
+    let client = match build_client("gemini-2.0-flash-lite") {
         Some(client) => client,
         None => return,
     };
@@ -122,7 +136,7 @@ fn gemini_prompt_integration_uses_mock_server() {
 
         runtime.block_on(async {
             let model = GeminiModel::Gemini20Flash;
-            let (_, model_name) = API::Gemini(model.clone()).to_strings();
+            let (_, model_name) = model.to_strings();
             let route_path = format!(
                 "/v1beta/models/{}:generateContent?key=mock-gemini-key",
                 model_name

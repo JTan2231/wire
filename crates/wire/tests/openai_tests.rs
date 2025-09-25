@@ -9,15 +9,29 @@ use wire::config::ClientOptions;
 use wire::openai::OpenAIClient;
 use wire::types::MessageType;
 
-fn build_client(model: OpenAIModel) -> Option<OpenAIClient> {
-    panic::catch_unwind(|| OpenAIClient::new(model)).ok()
+fn build_client<M>(model: M) -> Option<OpenAIClient>
+where
+    M: Into<OpenAIModel>,
+{
+    let model = model.into();
+    panic::catch_unwind(|| OpenAIClient::new(model.clone())).ok()
+}
+
+#[test]
+fn openai_client_new_accepts_model_str() {
+    let client = match build_client("gpt-5") {
+        Some(client) => client,
+        None => return,
+    };
+
+    assert_eq!(client.model, OpenAIModel::GPT5);
 }
 
 #[test]
 fn openai_build_request_includes_system_and_tooling() {
     std::env::set_var("OPENAI_API_KEY", "openai-key");
 
-    let client = match build_client(OpenAIModel::GPT4oMini) {
+    let client = match build_client("gpt-4o-mini") {
         Some(client) => client,
         None => return,
     };
@@ -92,7 +106,7 @@ fn openai_build_request_includes_system_and_tooling() {
 fn openai_build_request_adds_reasoning_effort_for_gpt5() {
     std::env::set_var("OPENAI_API_KEY", "openai-key");
 
-    let client = match build_client(OpenAIModel::GPT5) {
+    let client = match build_client("gpt-5") {
         Some(client) => client,
         None => return,
     };
@@ -138,7 +152,7 @@ fn openai_build_request_raw_contains_headers_and_body() {
 
 #[test]
 fn openai_read_json_response_extracts_text() {
-    let client = match build_client(OpenAIModel::GPT4oMini) {
+    let client = match build_client("gpt-4o-mini") {
         Some(client) => client,
         None => return,
     };
@@ -192,7 +206,7 @@ fn openai_prompt_integration_uses_mock_server() {
 
             let options =
                 ClientOptions::for_mock_server(&server).expect("client options for mock server");
-            let client = OpenAIClient::with_options(OpenAIModel::GPT4oMini, options);
+            let client = OpenAIClient::with_options("gpt-4o-mini", options);
 
             let response = client
                 .prompt(

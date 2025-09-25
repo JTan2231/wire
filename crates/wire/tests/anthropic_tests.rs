@@ -9,15 +9,29 @@ use wire::api::{AnthropicModel, Prompt};
 use wire::config::ClientOptions;
 use wire::types::MessageType;
 
-fn build_client(model: AnthropicModel) -> Option<AnthropicClient> {
-    panic::catch_unwind(|| AnthropicClient::new(model)).ok()
+fn build_client<M>(model: M) -> Option<AnthropicClient>
+where
+    M: Into<AnthropicModel>,
+{
+    let model = model.into();
+    panic::catch_unwind(|| AnthropicClient::new(model.clone())).ok()
+}
+
+#[test]
+fn anthropic_client_new_accepts_model_str() {
+    let client = match build_client("claude-3-5-haiku-20241022") {
+        Some(client) => client,
+        None => return,
+    };
+
+    assert_eq!(client.model, AnthropicModel::Claude35Haiku);
 }
 
 #[test]
 fn anthropic_build_request_formats_messages_and_tools() {
     std::env::set_var("ANTHROPIC_API_KEY", "anthropic-key");
 
-    let client = match build_client(AnthropicModel::Claude35SonnetNew) {
+    let client = match build_client("claude-3-5-sonnet-20241022") {
         Some(client) => client,
         None => return,
     };
@@ -102,7 +116,7 @@ fn anthropic_build_request_formats_messages_and_tools() {
 
 #[test]
 fn anthropic_read_json_response_extracts_text() {
-    let client = match build_client(AnthropicModel::Claude35SonnetNew) {
+    let client = match build_client("claude-3-5-sonnet-20241022") {
         Some(client) => client,
         None => return,
     };
@@ -150,7 +164,7 @@ fn anthropic_prompt_integration_uses_mock_server() {
 
             let options =
                 ClientOptions::for_mock_server(&server).expect("client options for mock server");
-            let client = AnthropicClient::with_options(AnthropicModel::Claude35SonnetNew, options);
+            let client = AnthropicClient::with_options("claude-3-5-sonnet-20241022", options);
 
             let response = client
                 .prompt(

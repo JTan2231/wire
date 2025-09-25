@@ -154,39 +154,9 @@ impl API {
 
     pub fn to_strings(&self) -> (String, String) {
         match self {
-            API::OpenAI(model) => {
-                let model_str = match model {
-                    OpenAIModel::GPT5 => "gpt-5",
-                    OpenAIModel::GPT4o => "gpt-4o",
-                    OpenAIModel::GPT4oMini => "gpt-4o-mini",
-                    OpenAIModel::O1Preview => "o1-preview",
-                    OpenAIModel::O1Mini => "o1-mini",
-                };
-                ("openai".to_string(), model_str.to_string())
-            }
-            API::Anthropic(model) => {
-                let model_str = match model {
-                    AnthropicModel::ClaudeOpus41 => "claude-opus-4-1-20250805",
-                    AnthropicModel::ClaudeOpus4 => "claude-opus-4-20250514",
-                    AnthropicModel::ClaudeSonnet4 => "claude-sonnet-4-20250514",
-                    AnthropicModel::Claude37Sonnet => "claude-3-7-sonnet-20250219",
-                    AnthropicModel::Claude35SonnetNew => "claude-3-5-sonnet-20241022",
-                    AnthropicModel::Claude35Haiku => "claude-3-5-haiku-20241022",
-                    AnthropicModel::Claude35SonnetOld => "claude-3-5-sonnet-20240620",
-                    AnthropicModel::Claude3Haiku => "claude-3-haiku-20240307",
-                    AnthropicModel::Claude3Opus => "claude-3-opus-20240229",
-                };
-                ("anthropic".to_string(), model_str.to_string())
-            }
-            API::Gemini(model) => {
-                let model_str = match model {
-                    GeminiModel::Gemini25ProExp => "gemini-2.5-flash-preview-04-17",
-                    GeminiModel::Gemini20Flash => "gemini-2.0-flash",
-                    GeminiModel::Gemini20FlashLite => "gemini-2.0-flash-lite",
-                    GeminiModel::GeminiEmbedding => "gemini-embedding-exp",
-                };
-                ("gemini".to_string(), model_str.to_string())
-            }
+            API::OpenAI(model) => model.to_strings(),
+            API::Anthropic(model) => model.to_strings(),
+            API::Gemini(model) => model.to_strings(),
         }
     }
 }
