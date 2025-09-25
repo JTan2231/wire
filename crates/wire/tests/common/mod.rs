@@ -1,5 +1,8 @@
 #![allow(dead_code)]
-use wire::api::{API, OpenAIModel};
+
+pub mod mock_server;
+
+use wire::api::{OpenAIModel, API};
 use wire::types::{Function, FunctionCall, Message, MessageType, Tool, ToolWrapper};
 
 pub fn message(message_type: MessageType, content: &str) -> Message {

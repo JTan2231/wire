@@ -1,7 +1,9 @@
 mod common;
 
+use common::mock_server::{MockJsonResponse, MockLLMServer, MockResponse, MockRoute};
 use common::{function_call, message, raw_request_body, request_body_json, sample_tool};
 use std::panic;
+use temp_env::with_var;
 use wire::api::{OpenAIModel, Prompt};
 use wire::openai::OpenAIClient;
 use wire::types::MessageType;
@@ -155,4 +157,68 @@ fn openai_read_json_response_extracts_text() {
         .expect("openai response should contain text");
 
     assert_eq!(content, "OpenAI reply");
+}
+
+#[test]
+fn openai_prompt_integration_uses_mock_server() {
+    if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
+        eprintln!("skipping openai integration test");
+        return;
+    }
+
+    with_var("OPENAI_API_KEY", Some("mock-openai-key"), || {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime for openai test");
+
+        runtime.block_on(async {
+            let server = MockLLMServer::start(vec![MockRoute::single(
+                "/v1/chat/completions",
+                MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "mock reply"
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2
+                    }
+                }))),
+            )])
+            .await
+            .expect("mock server starts");
+
+            let mut client = OpenAIClient::new(OpenAIModel::GPT4oMini);
+            client.host = "localhost".to_string();
+            client.port = server.address().port();
+            client.http_client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("reqwest client without proxy");
+
+            let response = client
+                .prompt(
+                    "Stay friendly.".to_string(),
+                    vec![message(MessageType::User, "Ping?")],
+                )
+                .await
+                .expect("prompt returns content");
+
+            assert_eq!(response.content, "mock reply");
+
+            let recorded = server.requests_for("/v1/chat/completions").await;
+            assert_eq!(recorded.len(), 1);
+
+            let payload: serde_json::Value =
+                serde_json::from_str(&recorded[0].body_as_string().expect("request body is utf-8"))
+                    .expect("request body parses as json");
+
+            assert_eq!(payload["stream"], false);
+            assert_eq!(payload["messages"][0]["role"], "system");
+            assert_eq!(payload["messages"][1]["content"], "Ping?");
+
+            server.shutdown().await;
+        });
+    });
 }

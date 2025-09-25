@@ -1,7 +1,9 @@
 mod common;
 
+use common::mock_server::{MockJsonResponse, MockLLMServer, MockResponse, MockRoute};
 use common::{function_call, message, request_body_json, sample_tool};
 use std::panic;
+use temp_env::with_var;
 use wire::anthropic::AnthropicClient;
 use wire::api::{AnthropicModel, Prompt};
 use wire::types::MessageType;
@@ -118,4 +120,73 @@ fn anthropic_read_json_response_extracts_text() {
         .expect("anthropic response should contain text");
 
     assert_eq!(content, "Response payload");
+}
+
+#[test]
+fn anthropic_prompt_integration_uses_mock_server() {
+    if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
+        eprintln!("skipping anthropic integration test");
+        return;
+    }
+
+    with_var("ANTHROPIC_API_KEY", Some("mock-anthropic-key"), || {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime for anthropic test");
+
+        runtime.block_on(async {
+            let server = MockLLMServer::start(vec![MockRoute::single(
+                "/v1/messages",
+                MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "anthropic reply"
+                        }
+                    ]
+                }))),
+            )])
+            .await
+            .expect("mock server starts");
+
+            let mut client = AnthropicClient::new(AnthropicModel::Claude35SonnetNew);
+            client.host = "localhost".to_string();
+            client.port = server.address().port();
+            client.http_client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("reqwest client without proxy");
+
+            let response = client
+                .prompt(
+                    "Assist kindly.".to_string(),
+                    vec![message(MessageType::User, "Hello?")],
+                )
+                .await
+                .expect("prompt returns content");
+
+            assert_eq!(response.content, "anthropic reply");
+
+            let recorded = server.requests_for("/v1/messages").await;
+            assert_eq!(recorded.len(), 1);
+
+            let headers = &recorded[0].headers;
+            assert_eq!(
+                headers.get("x-api-key"),
+                Some(&"mock-anthropic-key".to_string())
+            );
+            assert_eq!(
+                headers.get("anthropic-version"),
+                Some(&"2023-06-01".to_string())
+            );
+
+            let payload: serde_json::Value =
+                serde_json::from_str(&recorded[0].body_as_string().expect("request body is utf-8"))
+                    .expect("request body parses as json");
+
+            assert_eq!(payload["system"], "Assist kindly.");
+            assert_eq!(payload["messages"][0]["role"], "user");
+            assert_eq!(payload["messages"][0]["content"], "Hello?");
+
+            server.shutdown().await;
+        });
+    });
 }
