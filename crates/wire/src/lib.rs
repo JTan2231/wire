@@ -3,7 +3,9 @@ mod network_common;
 
 pub mod types;
 
+pub mod anthropic;
 pub mod api;
+pub mod gemini;
 pub mod openai;
 
 use api::API;

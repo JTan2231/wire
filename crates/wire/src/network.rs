@@ -927,3 +927,386 @@ pub async fn prompt_with_tools(
 
     Ok(chat_history)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::{AnthropicModel, GeminiModel, OpenAIModel};
+    use crate::types::{Function, FunctionCall, MessageType, Tool, ToolWrapper};
+    use temp_env::with_var;
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("reqwest client for tests")
+    }
+
+    fn sample_tool() -> Tool {
+        Tool {
+            function_type: "function".to_string(),
+            name: "echo".to_string(),
+            description: "test helper".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"}
+                },
+                "required": ["value"]
+            }),
+            function: Box::new(ToolWrapper(|args| args)),
+        }
+    }
+
+    fn user_message(api: &API, content: &str) -> Message {
+        Message {
+            message_type: MessageType::User,
+            content: content.to_string(),
+            api: api.clone(),
+            system_prompt: String::new(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    fn assistant_function_call(api: &API, name: &str, arguments: &str) -> Message {
+        Message {
+            message_type: MessageType::FunctionCall,
+            content: String::new(),
+            api: api.clone(),
+            system_prompt: String::new(),
+            tool_calls: Some(vec![FunctionCall {
+                id: "call-1".to_string(),
+                call_type: "function".to_string(),
+                function: Function {
+                    name: name.to_string(),
+                    arguments: arguments.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+            name: Some("assistant".to_string()),
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    fn tool_output_message(api: &API, id: &str, content: &str, tool_name: &str) -> Message {
+        Message {
+            message_type: MessageType::FunctionCallOutput,
+            content: content.to_string(),
+            api: api.clone(),
+            system_prompt: String::new(),
+            tool_calls: None,
+            tool_call_id: Some(id.to_string()),
+            name: Some(tool_name.to_string()),
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn build_request_openai_maps_messages_and_tools() {
+        with_var("OPENAI_API_KEY", Some("test-openai-key"), || {
+            let api = API::OpenAI(OpenAIModel::GPT4o);
+            let chat_history = vec![
+                user_message(&api, "Hello"),
+                assistant_function_call(&api, "echo", "{\"value\":\"hi\"}"),
+                tool_output_message(&api, "call-1", "{\"value\":\"hi\"}", "echo"),
+            ];
+
+            let params = get_params(
+                "System prompt",
+                api.clone(),
+                &chat_history,
+                Some(vec![sample_tool()]),
+                false,
+            );
+
+            let request = build_request(&test_client(), &params)
+                .build()
+                .expect("request should build");
+
+            let url = request.url();
+            assert_eq!(url.scheme(), "https");
+            assert_eq!(url.host_str(), Some("api.openai.com"));
+            assert_eq!(url.path(), "/v1/chat/completions");
+            assert_eq!(url.port_or_known_default(), Some(443));
+
+            let auth_header = request
+                .headers()
+                .get("Authorization")
+                .and_then(|v| v.to_str().ok())
+                .expect("authorization header");
+            assert_eq!(auth_header, "Bearer test-openai-key");
+
+            let body_bytes = request
+                .body()
+                .and_then(|body| body.as_bytes())
+                .expect("json body bytes");
+            let payload: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+
+            assert_eq!(payload["model"].as_str(), Some(params.model.as_str()));
+            assert_eq!(payload["stream"].as_bool(), Some(params.stream));
+
+            let messages = payload["messages"].as_array().expect("messages array");
+            assert_eq!(messages.len(), params.messages.len());
+            assert_eq!(messages[0]["role"], serde_json::json!("system"));
+            assert_eq!(messages[1]["role"], serde_json::json!("user"));
+            assert_eq!(messages[2]["role"], serde_json::json!("assistant"));
+            assert_eq!(
+                messages[2]["tool_calls"][0]["function"]["name"],
+                serde_json::json!("echo")
+            );
+            assert_eq!(messages[3]["role"], serde_json::json!("tool"));
+            assert_eq!(messages[3]["tool_call_id"], serde_json::json!("call-1"));
+
+            let tools = payload["tools"].as_array().expect("tools array");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0]["type"], serde_json::json!("function"));
+            assert_eq!(tools[0]["function"]["name"], serde_json::json!("echo"));
+        });
+    }
+
+    #[test]
+    fn build_request_anthropic_groups_tool_results() {
+        with_var("ANTHROPIC_API_KEY", Some("test-anthropic-key"), || {
+            let api = API::Anthropic(AnthropicModel::Claude35SonnetNew);
+            let chat_history = vec![
+                user_message(&api, "Question"),
+                tool_output_message(&api, "call-1", "{\"output\":1}", "first_tool"),
+                tool_output_message(&api, "call-2", "{\"output\":2}", "second_tool"),
+                Message {
+                    message_type: MessageType::Assistant,
+                    content: String::new(),
+                    api: api.clone(),
+                    system_prompt: String::new(),
+                    tool_calls: Some(vec![FunctionCall {
+                        id: "call-3".to_string(),
+                        call_type: "function".to_string(),
+                        function: Function {
+                            name: "third_tool".to_string(),
+                            arguments: "{\"value\":42}".to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                    name: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            ];
+
+            let params = get_params(
+                "Be helpful",
+                api.clone(),
+                &chat_history,
+                Some(vec![sample_tool()]),
+                false,
+            );
+
+            let request = build_request(&test_client(), &params)
+                .build()
+                .expect("request should build");
+
+            let headers = request.headers();
+            assert_eq!(
+                headers
+                    .get("x-api-key")
+                    .and_then(|value| value.to_str().ok()),
+                Some("test-anthropic-key")
+            );
+            assert_eq!(
+                headers
+                    .get("anthropic-version")
+                    .and_then(|value| value.to_str().ok()),
+                Some("2023-06-01")
+            );
+
+            let body_bytes = request
+                .body()
+                .and_then(|body| body.as_bytes())
+                .expect("json body bytes");
+            let payload: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+
+            assert_eq!(payload["model"].as_str(), Some(params.model.as_str()));
+            assert_eq!(
+                payload["system"].as_str(),
+                params.system_prompt.as_ref().map(|s| s.as_str())
+            );
+
+            let messages = payload["messages"].as_array().expect("messages array");
+            assert_eq!(messages.len(), 3);
+            assert_eq!(messages[0]["role"], serde_json::json!("user"));
+            assert_eq!(messages[0]["content"], serde_json::json!("Question"));
+
+            let tool_results = messages[1]["content"]
+                .as_array()
+                .expect("tool results array");
+            assert_eq!(tool_results.len(), 2);
+            assert_eq!(tool_results[0]["tool_use_id"], serde_json::json!("call-1"));
+            assert_eq!(tool_results[1]["tool_use_id"], serde_json::json!("call-2"));
+
+            let assistant = &messages[2];
+            assert_eq!(assistant["role"], serde_json::json!("assistant"));
+            let content = assistant["content"]
+                .as_array()
+                .expect("assistant content array");
+            assert_eq!(content.len(), 1);
+            assert_eq!(content[0]["type"], serde_json::json!("tool_use"));
+            assert_eq!(content[0]["name"], serde_json::json!("third_tool"));
+        });
+    }
+
+    #[test]
+    fn build_request_gemini_translates_roles() {
+        with_var("GEMINI_API_KEY", Some("test-gemini-key"), || {
+            let api = API::Gemini(GeminiModel::Gemini20Flash);
+            let chat_history = vec![
+                user_message(&api, "Hi"),
+                Message {
+                    message_type: MessageType::Assistant,
+                    content: "Response".to_string(),
+                    api: api.clone(),
+                    system_prompt: String::new(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            ];
+
+            let params = get_params("Keep it short", api.clone(), &chat_history, None, false);
+
+            let request = build_request(&test_client(), &params)
+                .build()
+                .expect("request should build");
+
+            let url = request.url();
+            assert_eq!(url.host_str(), Some("generativelanguage.googleapis.com"));
+            assert_eq!(
+                url.path(),
+                "/v1beta/models/gemini-2.0-flash:generateContent"
+            );
+            assert_eq!(
+                url.query_pairs()
+                    .find(|(k, _)| k == "key")
+                    .map(|(_, v)| v.to_string()),
+                Some("test-gemini-key".to_string())
+            );
+
+            let body_bytes = request
+                .body()
+                .and_then(|body| body.as_bytes())
+                .expect("json body bytes");
+            let payload: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+
+            let contents = payload["contents"].as_array().expect("contents array");
+            assert_eq!(contents.len(), 2);
+            assert_eq!(contents[0]["role"], serde_json::json!("user"));
+            assert_eq!(contents[1]["role"], serde_json::json!("model"));
+
+            let system_instruction = payload["system_instruction"]["parts"][0]["text"]
+                .as_str()
+                .expect("system instruction text");
+            assert_eq!(system_instruction, "Keep it short");
+        });
+    }
+
+    #[test]
+    fn build_request_raw_openai_emits_valid_http_envelope() {
+        let api = API::OpenAI(OpenAIModel::GPT4o);
+        let params = RequestParams {
+            provider: "openai".to_string(),
+            host: "api.openai.com".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            port: 443,
+            messages: vec![
+                Message {
+                    message_type: MessageType::System,
+                    content: "System".to_string(),
+                    api: api.clone(),
+                    system_prompt: "System".to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+                user_message(&api, "Hello"),
+            ],
+            model: "gpt-4o".to_string(),
+            stream: false,
+            authorization_token: "raw-token".to_string(),
+            max_tokens: None,
+            system_prompt: None,
+            tools: None,
+        };
+
+        let raw = build_request_raw(&params);
+        let body_start = raw.find('{').expect("json body start");
+        let (header, body) = raw.split_at(body_start);
+        let header = header.trim_end();
+        let body = body.trim();
+
+        assert!(header.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        assert!(header.contains("Host: api.openai.com"));
+        assert!(header.contains("Authorization: Bearer raw-token"));
+
+        let content_length_line = header
+            .lines()
+            .find(|line| line.trim_start().starts_with("Content-Length"))
+            .expect("content length header");
+        let length: usize = content_length_line
+            .trim_start()
+            .split(':')
+            .nth(1)
+            .and_then(|value| value.trim().parse().ok())
+            .expect("content length value");
+        assert_eq!(length, body.as_bytes().len());
+
+        let payload: serde_json::Value = serde_json::from_str(body).expect("valid json");
+        assert_eq!(payload["model"], serde_json::json!("gpt-4o"));
+    }
+
+    #[test]
+    fn read_json_response_reports_missing_fields() {
+        let api = API::OpenAI(OpenAIModel::GPT4o);
+        let result = read_json_response(&api, &serde_json::json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_json_response_extracts_provider_specific_content() {
+        let openai = read_json_response(
+            &API::OpenAI(OpenAIModel::GPT4o),
+            &serde_json::json!({
+                "choices": [{"message": {"content": "hello"}}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(openai, "hello");
+
+        let anthropic = read_json_response(
+            &API::Anthropic(AnthropicModel::Claude35SonnetNew),
+            &serde_json::json!({
+                "content": [{"text": "hi"}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(anthropic, "hi");
+
+        let gemini = read_json_response(
+            &API::Gemini(GeminiModel::Gemini20Flash),
+            &serde_json::json!({
+                "candidates": [{
+                    "content": {"parts": [{"text": "hola"}]} }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(gemini, "hola");
+    }
+}

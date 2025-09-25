@@ -15,3 +15,6 @@ serde_json = "1.0.133"
 tokio = "1.44.1"
 wire-macros = { path = "../wire-macros" }
 async-trait = "0.1.89"
+
+[dev-dependencies]
+temp-env = "0.3"
