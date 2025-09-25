@@ -3,6 +3,7 @@ use std::io::{BufRead, Write};
 use std::net::TcpStream;
 
 use crate::api::{OpenAIModel, Prompt};
+use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::*;
 use crate::types::{Message, MessageType, Tool};
 
@@ -26,16 +27,58 @@ pub struct OpenAIClient {
     pub host: String,
     pub port: u16,
     pub path: String,
+    pub scheme: Scheme,
 }
 
 impl OpenAIClient {
     pub fn new(model: OpenAIModel) -> Self {
-        Self {
+        Self::with_options(model, ClientOptions::default())
+    }
+
+    pub fn with_options(model: OpenAIModel, options: ClientOptions) -> Self {
+        let mut client = Self {
             http_client: reqwest::Client::new(),
             model,
             host: "api.openai.com".to_string(),
             port: 443,
             path: "/v1/chat/completions".to_string(),
+            scheme: Scheme::Https,
+        };
+
+        client.apply_options(options);
+        client
+    }
+
+    fn apply_options(&mut self, options: ClientOptions) {
+        match options.endpoint {
+            Endpoint::Default => {}
+            Endpoint::BaseUrl(endpoint) => {
+                self.host = endpoint.host;
+                self.port = endpoint.port;
+                self.scheme = endpoint.scheme;
+            }
+        }
+
+        if options.disable_proxy {
+            self.http_client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("reqwest client without proxy");
+        }
+    }
+
+    fn origin(&self) -> String {
+        match (self.scheme, self.port) {
+            (Scheme::Https, 443) => format!("https://{}", self.host),
+            (Scheme::Http, 80) => format!("http://{}", self.host),
+            _ => format!("{}://{}:{}", self.scheme.as_str(), self.host, self.port),
+        }
+    }
+
+    fn host_header(&self) -> String {
+        match (self.scheme, self.port) {
+            (Scheme::Https, 443) | (Scheme::Http, 80) => self.host.clone(),
+            _ => format!("{}:{}", self.host, self.port),
         }
     }
 }
@@ -122,11 +165,7 @@ impl Prompt for OpenAIClient {
             body["tools"] = serde_json::json!(tools_mapped);
         }
 
-        let url = if self.host == "localhost" {
-            format!("http://{}:{}{}", self.host, self.port, self.path)
-        } else {
-            format!("https://{}:{}{}", self.host, self.port, self.path)
-        };
+        let url = format!("{}{}", self.origin(), self.path);
 
         let mut request = self.http_client.post(url.clone()).json(&body);
 
@@ -198,7 +237,7 @@ impl Prompt for OpenAIClient {
         {}\
         {}",
             path,
-            self.host,
+            self.host_header(),
             json_string.len(),
             auth_string,
             if api_version == "\r\n" && auth_string == "\r\n" {
@@ -218,6 +257,13 @@ impl Prompt for OpenAIClient {
         system_prompt: String,
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<Message, Box<dyn std::error::Error>> {
+        if self.scheme != Scheme::Https {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "prompt_stream is not available with non-TLS endpoints",
+            )));
+        }
+
         let request = self.build_request_raw(system_prompt.clone(), chat_history, true);
 
         let mut stream = connect_https(&self.host, self.port);

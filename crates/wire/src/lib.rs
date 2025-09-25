@@ -5,7 +5,9 @@ pub mod types;
 
 pub mod anthropic;
 pub mod api;
+pub mod config;
 pub mod gemini;
+pub mod mock;
 pub mod openai;
 
 use api::API;

@@ -3,6 +3,7 @@ use std::io::{BufRead, Write};
 use std::net::TcpStream;
 
 use crate::api::{AnthropicModel, Prompt};
+use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::{connect_https, unescape};
 use crate::types::{Message, MessageType, Tool};
 
@@ -13,17 +14,59 @@ pub struct AnthropicClient {
     pub port: u16,
     pub path: String,
     pub max_tokens: usize,
+    pub scheme: Scheme,
 }
 
 impl AnthropicClient {
     pub fn new(model: AnthropicModel) -> Self {
-        Self {
+        Self::with_options(model, ClientOptions::default())
+    }
+
+    pub fn with_options(model: AnthropicModel, options: ClientOptions) -> Self {
+        let mut client = Self {
             http_client: reqwest::Client::new(),
             model,
             host: "api.anthropic.com".to_string(),
             port: 443,
             path: "/v1/messages".to_string(),
             max_tokens: 4096,
+            scheme: Scheme::Https,
+        };
+
+        client.apply_options(options);
+        client
+    }
+
+    fn apply_options(&mut self, options: ClientOptions) {
+        match options.endpoint {
+            Endpoint::Default => {}
+            Endpoint::BaseUrl(endpoint) => {
+                self.host = endpoint.host;
+                self.port = endpoint.port;
+                self.scheme = endpoint.scheme;
+            }
+        }
+
+        if options.disable_proxy {
+            self.http_client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("reqwest client without proxy");
+        }
+    }
+
+    fn origin(&self) -> String {
+        match (self.scheme, self.port) {
+            (Scheme::Https, 443) => format!("https://{}", self.host),
+            (Scheme::Http, 80) => format!("http://{}", self.host),
+            _ => format!("{}://{}:{}", self.scheme.as_str(), self.host, self.port),
+        }
+    }
+
+    fn host_header(&self) -> String {
+        match (self.scheme, self.port) {
+            (Scheme::Https, 443) | (Scheme::Http, 80) => self.host.clone(),
+            _ => format!("{}:{}", self.host, self.port),
         }
     }
 
@@ -151,11 +194,7 @@ impl Prompt for AnthropicClient {
             body["tools"] = serde_json::json!(tools_mapped);
         }
 
-        let url = if self.host == "localhost" {
-            format!("http://{}:{}{}", self.host, self.port, self.path)
-        } else {
-            format!("https://{}:{}{}", self.host, self.port, self.path)
-        };
+        let url = format!("{}{}", self.origin(), self.path);
 
         self.http_client
             .post(url)
@@ -194,7 +233,7 @@ impl Prompt for AnthropicClient {
         anthropic-version: 2023-06-01\r\n\r\n\
         {}",
             path,
-            self.host,
+            self.host_header(),
             json_string.len(),
             AnthropicClient::get_auth_token(),
             json_string.trim()
@@ -239,6 +278,13 @@ impl Prompt for AnthropicClient {
         system_prompt: String,
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<Message, Box<dyn std::error::Error>> {
+        if self.scheme != Scheme::Https {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "prompt_stream is not available with non-TLS endpoints",
+            )));
+        }
+
         let request = self.build_request_raw(system_prompt.clone(), chat_history, true);
 
         let mut stream = connect_https(&self.host, self.port);

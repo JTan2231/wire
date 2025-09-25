@@ -6,6 +6,7 @@ use std::panic;
 use temp_env::with_var;
 use wire::anthropic::AnthropicClient;
 use wire::api::{AnthropicModel, Prompt};
+use wire::config::ClientOptions;
 use wire::types::MessageType;
 
 fn build_client(model: AnthropicModel) -> Option<AnthropicClient> {
@@ -147,13 +148,9 @@ fn anthropic_prompt_integration_uses_mock_server() {
             .await
             .expect("mock server starts");
 
-            let mut client = AnthropicClient::new(AnthropicModel::Claude35SonnetNew);
-            client.host = "localhost".to_string();
-            client.port = server.address().port();
-            client.http_client = reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("reqwest client without proxy");
+            let options =
+                ClientOptions::for_mock_server(&server).expect("client options for mock server");
+            let client = AnthropicClient::with_options(AnthropicModel::Claude35SonnetNew, options);
 
             let response = client
                 .prompt(

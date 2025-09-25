@@ -3,6 +3,7 @@ use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 
 use crate::api::{GeminiModel, Prompt};
+use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::{connect_https, unescape};
 use crate::types::{Message, MessageType, Tool};
 
@@ -11,15 +12,57 @@ pub struct GeminiClient {
     pub model: GeminiModel,
     pub host: String,
     pub port: u16,
+    pub scheme: Scheme,
 }
 
 impl GeminiClient {
     pub fn new(model: GeminiModel) -> Self {
-        Self {
+        Self::with_options(model, ClientOptions::default())
+    }
+
+    pub fn with_options(model: GeminiModel, options: ClientOptions) -> Self {
+        let mut client = Self {
             http_client: reqwest::Client::new(),
             model,
             host: "generativelanguage.googleapis.com".to_string(),
             port: 443,
+            scheme: Scheme::Https,
+        };
+
+        client.apply_options(options);
+        client
+    }
+
+    fn apply_options(&mut self, options: ClientOptions) {
+        match options.endpoint {
+            Endpoint::Default => {}
+            Endpoint::BaseUrl(endpoint) => {
+                self.host = endpoint.host;
+                self.port = endpoint.port;
+                self.scheme = endpoint.scheme;
+            }
+        }
+
+        if options.disable_proxy {
+            self.http_client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("reqwest client without proxy");
+        }
+    }
+
+    fn origin(&self) -> String {
+        match (self.scheme, self.port) {
+            (Scheme::Https, 443) => format!("https://{}", self.host),
+            (Scheme::Http, 80) => format!("http://{}", self.host),
+            _ => format!("{}://{}:{}", self.scheme.as_str(), self.host, self.port),
+        }
+    }
+
+    fn host_header(&self) -> String {
+        match (self.scheme, self.port) {
+            (Scheme::Https, 443) | (Scheme::Http, 80) => self.host.clone(),
+            _ => format!("{}:{}", self.host, self.port),
         }
     }
 
@@ -70,11 +113,7 @@ impl Prompt for GeminiClient {
             }
         });
 
-        let url = if self.host == "localhost" {
-            format!("http://{}:{}{}", self.host, self.port, self.path(stream))
-        } else {
-            format!("https://{}:{}{}", self.host, self.port, self.path(stream))
-        };
+        let url = format!("{}{}", self.origin(), self.path(stream));
 
         self.http_client
             .post(format!("{}?key={}", url, GeminiClient::get_auth_token()))
@@ -122,7 +161,7 @@ impl Prompt for GeminiClient {
         Accept: */*\r\n\r\n\r\n\
         {}",
             path,
-            self.host,
+            self.host_header(),
             json_string.len(),
             json_string.trim()
         )
@@ -166,6 +205,13 @@ impl Prompt for GeminiClient {
         system_prompt: String,
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<Message, Box<dyn std::error::Error>> {
+        if self.scheme != Scheme::Https {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "prompt_stream is not available with non-TLS endpoints",
+            )));
+        }
+
         let request = self.build_request_raw(system_prompt.clone(), chat_history, true);
 
         let mut stream = connect_https(&self.host, self.port);

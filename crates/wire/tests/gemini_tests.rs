@@ -5,6 +5,7 @@ use common::{message, raw_request_body, request_body_json};
 use std::panic;
 use temp_env::with_var;
 use wire::api::{GeminiModel, Prompt, API};
+use wire::config::ClientOptions;
 use wire::gemini::GeminiClient;
 use wire::types::MessageType;
 
@@ -120,8 +121,8 @@ fn gemini_prompt_integration_uses_mock_server() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime for gemini test");
 
         runtime.block_on(async {
-            let mut client = GeminiClient::new(GeminiModel::Gemini20Flash);
-            let (_, model_name) = API::Gemini(client.model.clone()).to_strings();
+            let model = GeminiModel::Gemini20Flash;
+            let (_, model_name) = API::Gemini(model.clone()).to_strings();
             let route_path = format!(
                 "/v1beta/models/{}:generateContent?key=mock-gemini-key",
                 model_name
@@ -144,12 +145,9 @@ fn gemini_prompt_integration_uses_mock_server() {
             .await
             .expect("mock server starts");
 
-            client.host = "localhost".to_string();
-            client.port = server.address().port();
-            client.http_client = reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("reqwest client without proxy");
+            let options =
+                ClientOptions::for_mock_server(&server).expect("client options for mock server");
+            let client = GeminiClient::with_options(model, options);
 
             let response = client
                 .prompt(
@@ -168,7 +166,7 @@ fn gemini_prompt_integration_uses_mock_server() {
                 .headers
                 .get("host")
                 .expect("host header present");
-            assert!(url_header.contains("localhost"));
+            assert!(url_header.contains("127.0.0.1"));
 
             let payload: serde_json::Value =
                 serde_json::from_str(&recorded[0].body_as_string().expect("request body is utf-8"))

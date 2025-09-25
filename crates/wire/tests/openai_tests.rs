@@ -5,6 +5,7 @@ use common::{function_call, message, raw_request_body, request_body_json, sample
 use std::panic;
 use temp_env::with_var;
 use wire::api::{OpenAIModel, Prompt};
+use wire::config::ClientOptions;
 use wire::openai::OpenAIClient;
 use wire::types::MessageType;
 
@@ -189,13 +190,9 @@ fn openai_prompt_integration_uses_mock_server() {
             .await
             .expect("mock server starts");
 
-            let mut client = OpenAIClient::new(OpenAIModel::GPT4oMini);
-            client.host = "localhost".to_string();
-            client.port = server.address().port();
-            client.http_client = reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("reqwest client without proxy");
+            let options =
+                ClientOptions::for_mock_server(&server).expect("client options for mock server");
+            let client = OpenAIClient::with_options(OpenAIModel::GPT4oMini, options);
 
             let response = client
                 .prompt(
