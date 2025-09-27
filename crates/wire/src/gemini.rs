@@ -94,14 +94,6 @@ impl GeminiClient {
         client
     }
 
-    /// Helper that seeds a `MessageBuilder` configured for this Gemini model.
-    pub fn new_message<S>(&self, content: S) -> MessageBuilder
-    where
-        S: Into<String>,
-    {
-        MessageBuilder::new(crate::api::API::Gemini(self.model.clone()), content)
-    }
-
     /// Apply caller-supplied configuration overlays.
     fn apply_options(&mut self, options: ClientOptions) {
         match options.endpoint {
@@ -158,6 +150,11 @@ impl Prompt for GeminiClient {
     /// Retrieve the API key from the environment.
     fn get_auth_token(&self) -> String {
         std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY environment variable not set")
+    }
+
+    /// Helper that seeds a `MessageBuilder` configured for this Gemini model.
+    fn new_message(&self, content: String) -> MessageBuilder {
+        MessageBuilder::new(crate::api::API::Gemini(self.model.clone()), content)
     }
 
     /// Build a `Reqwest` request scoped to the Gemini API.

@@ -1,11 +1,13 @@
 use native_tls::TlsStream;
 use std::net::TcpStream;
 
-use crate::types::{Message, Tool};
+use crate::types::{Message, MessageBuilder, Tool};
 
 #[async_trait::async_trait]
 pub trait Prompt: Send + Sync {
     fn get_auth_token(&self) -> String;
+
+    fn new_message(&self, content: String) -> MessageBuilder;
 
     fn build_request(
         &self,

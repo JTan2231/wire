@@ -110,15 +110,6 @@ impl AnthropicClient {
         client
     }
 
-    /// Convenience helper that seeds a `MessageBuilder` scoped to the configured
-    /// Anthropic model.
-    pub fn new_message<S>(&self, content: S) -> MessageBuilder
-    where
-        S: Into<String>,
-    {
-        MessageBuilder::new(crate::api::API::Anthropic(self.model.clone()), content)
-    }
-
     /// Apply optional client configuration modifiers.
     fn apply_options(&mut self, options: ClientOptions) {
         match options.endpoint {
@@ -396,6 +387,12 @@ impl Prompt for AnthropicClient {
     /// Retrieve the API key from the environment.
     fn get_auth_token(&self) -> String {
         std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY environment variable not set")
+    }
+
+    /// Convenience helper that seeds a `MessageBuilder` scoped to the configured
+    /// Anthropic model.
+    fn new_message(&self, content: String) -> MessageBuilder {
+        MessageBuilder::new(crate::api::API::Anthropic(self.model.clone()), content)
     }
 
     /// Build a Reqwest request for an Anthropic message completion.

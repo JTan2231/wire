@@ -100,14 +100,6 @@ impl OpenAIClient {
         client
     }
 
-    /// Helper that returns a `MessageBuilder` pinned to the selected OpenAI model.
-    pub fn new_message<S>(&self, content: S) -> MessageBuilder
-    where
-        S: Into<String>,
-    {
-        MessageBuilder::new(crate::api::API::OpenAI(self.model.clone()), content)
-    }
-
     /// Apply optional configuration overrides.
     fn apply_options(&mut self, options: ClientOptions) {
         match options.endpoint {
@@ -280,6 +272,11 @@ impl Prompt for OpenAIClient {
     /// Fetch the OpenAI API key from the environment.
     fn get_auth_token(&self) -> String {
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set")
+    }
+
+    /// Helper that returns a `MessageBuilder` pinned to the selected OpenAI model.
+    fn new_message(&self, content: String) -> MessageBuilder {
+        MessageBuilder::new(crate::api::API::OpenAI(self.model.clone()), content)
     }
 
     /// Build a `reqwest` request tailored to OpenAI's chat completions endpoint,
