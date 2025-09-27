@@ -10,8 +10,52 @@ pub mod gemini;
 pub mod mock;
 pub mod openai;
 
-use api::{API, Prompt};
+use crate::config::ClientOptions;
+use api::{Prompt, API};
 use types::{Message, Tool};
+
+/// Create a client using provider and model identifiers with default options.
+///
+/// # Errors
+/// Returns an error when the provider/model pair is unknown.
+pub fn new_client(provider: &str, model: &str) -> Result<Box<dyn Prompt>, String> {
+    new_client_internal(provider, model, None)
+}
+
+/// Create a client using provider/model identifiers and custom transport options.
+///
+/// # Errors
+/// Returns an error when the provider/model pair is unknown.
+pub fn new_client_with_options(
+    provider: &str,
+    model: &str,
+    options: ClientOptions,
+) -> Result<Box<dyn Prompt>, String> {
+    new_client_internal(provider, model, Some(options))
+}
+
+fn new_client_internal(
+    provider: &str,
+    model: &str,
+    options: Option<ClientOptions>,
+) -> Result<Box<dyn Prompt>, String> {
+    let api = API::from_strings(provider, model)?;
+
+    Ok(match (api, options) {
+        (API::OpenAI(model), Some(options)) => {
+            Box::new(openai::OpenAIClient::with_options(model, options))
+        }
+        (API::OpenAI(model), None) => Box::new(openai::OpenAIClient::new(model)),
+        (API::Anthropic(model), Some(options)) => {
+            Box::new(anthropic::AnthropicClient::with_options(model, options))
+        }
+        (API::Anthropic(model), None) => Box::new(anthropic::AnthropicClient::new(model)),
+        (API::Gemini(model), Some(options)) => {
+            Box::new(gemini::GeminiClient::with_options(model, options))
+        }
+        (API::Gemini(model), None) => Box::new(gemini::GeminiClient::new(model)),
+    })
+}
 
 pub mod prelude {
     pub use crate::types::{MessageBuilder, MessageWithTools, Tool, ToolWrapper};
