@@ -10,7 +10,7 @@ pub mod gemini;
 pub mod mock;
 pub mod openai;
 
-use api::API;
+use api::{API, Prompt};
 use types::{Message, Tool};
 
 pub mod prelude {

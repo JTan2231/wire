@@ -38,6 +38,21 @@ pub trait Prompt: Send + Sync {
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<Message, Box<dyn std::error::Error>>;
 
+    async fn prompt_with_tools(
+        &self,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>>;
+
+    async fn prompt_with_tools_with_status(
+        &self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>>;
+
     fn read_json_response(
         &self,
         response_json: &serde_json::Value,

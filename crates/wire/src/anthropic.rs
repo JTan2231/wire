@@ -390,28 +390,6 @@ impl AnthropicClient {
         Ok(chat_history)
     }
 
-    /// Prompt Anthropic without status reporting.
-    pub async fn prompt_with_tools(
-        &self,
-        system_prompt: &str,
-        chat_history: Vec<Message>,
-        tools: Vec<Tool>,
-    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-        self.prompt_with_tools_internal(None, system_prompt, chat_history, tools)
-            .await
-    }
-
-    /// Prompt Anthropic while forwarding status updates through the channel.
-    pub async fn prompt_with_tools_with_status(
-        &self,
-        tx: tokio::sync::mpsc::Sender<String>,
-        system_prompt: &str,
-        chat_history: Vec<Message>,
-        tools: Vec<Tool>,
-    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-        self.prompt_with_tools_internal(Some(tx), system_prompt, chat_history, tools)
-            .await
-    }
 }
 
 #[async_trait::async_trait]
@@ -592,6 +570,27 @@ impl Prompt for AnthropicClient {
             input_tokens: 0,
             output_tokens: 0,
         })
+    }
+
+    async fn prompt_with_tools(
+        &self,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(None, system_prompt, chat_history, tools)
+            .await
+    }
+
+    async fn prompt_with_tools_with_status(
+        &self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(Some(tx), system_prompt, chat_history, tools)
+            .await
     }
 
     /// Extract the assistant response from Anthropic's JSON payload.

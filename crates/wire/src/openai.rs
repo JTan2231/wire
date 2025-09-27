@@ -273,29 +273,6 @@ impl OpenAIClient {
 
         Ok(chat_history)
     }
-
-    /// Prompt the OpenAI API with tool support.
-    pub async fn prompt_with_tools(
-        &self,
-        system_prompt: &str,
-        chat_history: Vec<Message>,
-        tools: Vec<Tool>,
-    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-        self.prompt_with_tools_internal(None, system_prompt, chat_history, tools)
-            .await
-    }
-
-    /// Prompt the OpenAI API with tool support while emitting status updates.
-    pub async fn prompt_with_tools_with_status(
-        &self,
-        tx: tokio::sync::mpsc::Sender<String>,
-        system_prompt: &str,
-        chat_history: Vec<Message>,
-        tools: Vec<Tool>,
-    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-        self.prompt_with_tools_internal(Some(tx), system_prompt, chat_history, tools)
-            .await
-    }
 }
 
 #[async_trait::async_trait]
@@ -524,6 +501,27 @@ impl Prompt for OpenAIClient {
             input_tokens: 0,
             output_tokens: 0,
         })
+    }
+
+    async fn prompt_with_tools(
+        &self,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(None, system_prompt, chat_history, tools)
+            .await
+    }
+
+    async fn prompt_with_tools_with_status(
+        &self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(Some(tx), system_prompt, chat_history, tools)
+            .await
     }
 
     /// Execute a non-streaming request and return the assistant response once

@@ -152,29 +152,6 @@ impl GeminiClient {
         )
     }
 
-    /// Placeholder while Gemini gains feature parity with other clients.
-    pub async fn prompt_with_tools(
-        &self,
-        system_prompt: &str,
-        chat_history: Vec<Message>,
-        tools: Vec<Tool>,
-    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-        let _ = (system_prompt, chat_history, tools);
-        Err("prompt_with_tools is not yet implemented for Gemini".into())
-    }
-
-    /// Placeholder variant that accepts a status channel for future use.
-    pub async fn prompt_with_tools_with_status(
-        &self,
-        tx: tokio::sync::mpsc::Sender<String>,
-        system_prompt: &str,
-        chat_history: Vec<Message>,
-        tools: Vec<Tool>,
-    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-        let _ = tx;
-        self.prompt_with_tools(system_prompt, chat_history, tools)
-            .await
-    }
 }
 
 #[async_trait::async_trait]
@@ -356,6 +333,27 @@ impl Prompt for GeminiClient {
             input_tokens: 0,
             output_tokens: 0,
         })
+    }
+
+    async fn prompt_with_tools(
+        &self,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        let _ = (system_prompt, chat_history, tools);
+        Err("prompt_with_tools is not yet implemented for Gemini".into())
+    }
+
+    async fn prompt_with_tools_with_status(
+        &self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        let _ = tx;
+        self.prompt_with_tools(system_prompt, chat_history, tools).await
     }
 
     /// Extract the assistant payload from Gemini's JSON response body.
