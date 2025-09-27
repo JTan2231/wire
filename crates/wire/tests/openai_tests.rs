@@ -175,6 +175,186 @@ fn openai_read_json_response_extracts_text() {
 }
 
 #[test]
+fn openai_prompt_with_tools_executes_tool_call_sequence() {
+    if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
+        eprintln!("skipping openai tool integration test");
+        return;
+    }
+
+    with_var("OPENAI_API_KEY", Some("mock-openai-key"), || {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime for openai tool test");
+
+        runtime.block_on(async {
+            let first_response = MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                "choices": [
+                    {
+                        "message": {
+                            "content": null,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "echo",
+                                        "arguments": serde_json::json!({
+                                            "value": "hello"
+                                        }).to_string()
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 1
+                }
+            })));
+
+            let second_response = MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                "choices": [
+                    {
+                        "message": {
+                            "content": "All done."
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3
+                }
+            })));
+
+            let server = MockLLMServer::start(vec![MockRoute::new(
+                "/v1/chat/completions",
+                vec![first_response, second_response],
+            )])
+            .await
+            .expect("mock server starts");
+
+            let options =
+                ClientOptions::for_mock_server(&server).expect("client options for mock server");
+            let client = OpenAIClient::with_options("gpt-4o-mini", options);
+
+            let history = vec![message(MessageType::User, "Please call the tool")];
+
+            let result = client
+                .prompt_with_tools("Follow instructions.", history, vec![sample_tool("echo")])
+                .await
+                .expect("tool-assisted prompt succeeds");
+
+            assert_eq!(result.len(), 4);
+
+            let function_call_message = &result[1];
+            assert_eq!(
+                function_call_message.message_type,
+                MessageType::FunctionCall
+            );
+            let calls = function_call_message
+                .tool_calls
+                .as_ref()
+                .expect("function call metadata present");
+            assert_eq!(calls[0].function.name, "echo");
+
+            let tool_output_message = &result[2];
+            assert_eq!(
+                tool_output_message.message_type,
+                MessageType::FunctionCallOutput
+            );
+            assert_eq!(
+                tool_output_message.content,
+                serde_json::json!({ "value": "hello" }).to_string()
+            );
+
+            let final_message = result.last().expect("final assistant message");
+            assert_eq!(final_message.message_type, MessageType::Assistant);
+            assert_eq!(final_message.content, "All done.");
+
+            let recorded = server.requests_for("/v1/chat/completions").await;
+            assert_eq!(recorded.len(), 2);
+
+            server.shutdown().await;
+        });
+    });
+}
+
+#[test]
+fn openai_prompt_with_tools_with_status_reports_tool_invocation() {
+    if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
+        eprintln!("skipping openai tool status integration test");
+        return;
+    }
+
+    with_var("OPENAI_API_KEY", Some("mock-openai-key"), || {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime for status test");
+
+        runtime.block_on(async {
+            let server = MockLLMServer::start(vec![MockRoute::new(
+                "/v1/chat/completions",
+                vec![
+                    MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": null,
+                                    "tool_calls": [
+                                        {
+                                            "id": "call-1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "echo",
+                                                "arguments": serde_json::json!({
+                                                    "value": "hello"
+                                                }).to_string()
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }))),
+                    MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "All done."
+                                }
+                            }
+                        ]
+                    }))),
+                ],
+            )])
+            .await
+            .expect("mock server starts");
+
+            let options =
+                ClientOptions::for_mock_server(&server).expect("client options for mock server");
+            let client = OpenAIClient::with_options("gpt-4o-mini", options);
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+
+            let result = client
+                .prompt_with_tools_with_status(
+                    tx,
+                    "Follow instructions.",
+                    vec![message(MessageType::User, "Call the tool")],
+                    vec![sample_tool("echo")],
+                )
+                .await
+                .expect("tool-assisted prompt succeeds");
+
+            assert_eq!(result.len(), 4);
+
+            let status = rx.recv().await.expect("status message available");
+            assert_eq!(status, "calling tool echo...");
+            assert!(rx.try_recv().is_err());
+
+            server.shutdown().await;
+        });
+    });
+}
+
+#[test]
 fn openai_prompt_integration_uses_mock_server() {
     if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
         eprintln!("skipping openai integration test");

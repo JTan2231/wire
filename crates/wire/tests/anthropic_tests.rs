@@ -138,6 +138,91 @@ fn anthropic_read_json_response_extracts_text() {
 }
 
 #[test]
+fn anthropic_prompt_with_tools_with_status_emits_warning_and_runs_tool() {
+    if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
+        eprintln!("skipping anthropic tool integration test");
+        return;
+    }
+
+    with_var("ANTHROPIC_API_KEY", Some("mock-anthropic-key"), || {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime for anthropic tool test");
+
+        runtime.block_on(async {
+            let first = MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": ""
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "call-1",
+                        "name": "lookup_weather",
+                        "input": { "zip": "10001" }
+                    }
+                ]
+            })));
+
+            let second = MockResponse::Json(MockJsonResponse::new(serde_json::json!({
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Final anthropic response"
+                    }
+                ]
+            })));
+
+            let server =
+                MockLLMServer::start(vec![MockRoute::new("/v1/messages", vec![first, second])])
+                    .await
+                    .expect("mock server starts");
+
+            let options =
+                ClientOptions::for_mock_server(&server).expect("client options for mock server");
+            let client = AnthropicClient::with_options("claude-3-5-sonnet-20241022", options);
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+
+            let result = client
+                .prompt_with_tools_with_status(
+                    tx,
+                    "Assist kindly.",
+                    vec![message(MessageType::User, "Weather please")],
+                    vec![sample_tool("lookup_weather")],
+                )
+                .await
+                .expect("anthropic tool handling succeeds");
+
+            assert_eq!(result.len(), 4);
+
+            let assistant_with_call = &result[1];
+            assert_eq!(assistant_with_call.message_type, MessageType::Assistant);
+            assert!(assistant_with_call.tool_calls.is_some());
+
+            let tool_output = &result[2];
+            assert_eq!(tool_output.message_type, MessageType::FunctionCallOutput);
+
+            let final_message = result.last().expect("final anthropic message");
+            assert_eq!(final_message.message_type, MessageType::Assistant);
+            assert_eq!(final_message.content, "Final anthropic response");
+
+            let first_status = rx.recv().await.expect("first status");
+            assert_eq!(first_status, "warn: anthropic tool support is experimental");
+            let second_status = rx.recv().await.expect("second status");
+            assert_eq!(second_status, "calling tool lookup_weather...");
+            assert!(rx.try_recv().is_err());
+
+            let recorded = server.requests_for("/v1/messages").await;
+            assert_eq!(recorded.len(), 2);
+
+            server.shutdown().await;
+        });
+    });
+}
+
+#[test]
 fn anthropic_prompt_integration_uses_mock_server() {
     if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
         eprintln!("skipping anthropic integration test");

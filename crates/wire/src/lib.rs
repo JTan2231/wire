@@ -45,18 +45,34 @@ pub async fn prompt_with_tools(
     chat_history: Vec<Message>,
     tools: Vec<Tool>,
 ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-    let response =
-        match network::prompt_with_tools(None, api.clone(), system_prompt, chat_history, tools)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                println!("error prompting LLM: {}", e);
-                return Err(e);
-            }
-        };
+    let response = match (api, chat_history, tools) {
+        (API::OpenAI(model), chat_history, tools) => {
+            let client = openai::OpenAIClient::new(model.clone());
+            client
+                .prompt_with_tools(system_prompt, chat_history, tools)
+                .await
+        }
+        (API::Anthropic(model), chat_history, tools) => {
+            let client = anthropic::AnthropicClient::new(model.clone());
+            client
+                .prompt_with_tools(system_prompt, chat_history, tools)
+                .await
+        }
+        (API::Gemini(model), chat_history, tools) => {
+            let client = gemini::GeminiClient::new(model.clone());
+            client
+                .prompt_with_tools(system_prompt, chat_history, tools)
+                .await
+        }
+    };
 
-    Ok(response)
+    match response {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            println!("error prompting LLM: {}", e);
+            Err(e)
+        }
+    }
 }
 
 pub async fn prompt_with_tools_and_status(
@@ -66,16 +82,32 @@ pub async fn prompt_with_tools_and_status(
     chat_history: Vec<Message>,
     tools: Vec<Tool>,
 ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
-    let response =
-        match network::prompt_with_tools(Some(tx), api.clone(), system_prompt, chat_history, tools)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                println!("error prompting LLM: {}", e);
-                return Err(e);
-            }
-        };
+    let response = match (api, chat_history, tools, tx) {
+        (API::OpenAI(model), chat_history, tools, tx) => {
+            let client = openai::OpenAIClient::new(model.clone());
+            client
+                .prompt_with_tools_with_status(tx, system_prompt, chat_history, tools)
+                .await
+        }
+        (API::Anthropic(model), chat_history, tools, tx) => {
+            let client = anthropic::AnthropicClient::new(model.clone());
+            client
+                .prompt_with_tools_with_status(tx, system_prompt, chat_history, tools)
+                .await
+        }
+        (API::Gemini(model), chat_history, tools, tx) => {
+            let client = gemini::GeminiClient::new(model.clone());
+            client
+                .prompt_with_tools_with_status(tx, system_prompt, chat_history, tools)
+                .await
+        }
+    };
 
-    Ok(response)
+    match response {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            println!("error prompting LLM: {}", e);
+            Err(e)
+        }
+    }
 }

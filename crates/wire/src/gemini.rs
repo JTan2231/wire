@@ -8,6 +8,7 @@ use crate::network_common::{connect_https, unescape};
 use crate::types::{Message, MessageBuilder, MessageType, Tool};
 
 impl GeminiModel {
+    /// Resolve a model identifier string into the strongly typed enum variant.
     pub fn from_model_name(model: &str) -> Result<Self, String> {
         match model {
             "gemini-2.5-flash-preview-04-17" => Ok(GeminiModel::Gemini25ProExp),
@@ -18,6 +19,8 @@ impl GeminiModel {
         }
     }
 
+    /// Return a `(provider, model)` tuple used when assembling request bodies
+    /// and diagnostic output.
     pub fn to_strings(&self) -> (String, String) {
         let model = match self {
             GeminiModel::Gemini25ProExp => "gemini-2.5-flash-preview-04-17",
@@ -50,6 +53,11 @@ impl From<String> for GeminiModel {
     }
 }
 
+/// Client adapter for Google's Gemini Generative Language API.
+///
+/// The implementation mirrors the behaviour of the other provider clients but
+/// adapts to Gemini's specific JSON layout and chunked transfer streaming
+/// format.
 pub struct GeminiClient {
     pub http_client: reqwest::Client,
     pub model: GeminiModel,
@@ -59,6 +67,7 @@ pub struct GeminiClient {
 }
 
 impl GeminiClient {
+    /// Construct a client pointed at the default Gemini endpoint.
     pub fn new<M>(model: M) -> Self
     where
         M: Into<GeminiModel>,
@@ -66,6 +75,8 @@ impl GeminiClient {
         Self::with_options(model, ClientOptions::default())
     }
 
+    /// Construct a client with custom transport options (host overrides,
+    /// alternate schemes, proxy behaviour, etc.).
     pub fn with_options<M>(model: M, options: ClientOptions) -> Self
     where
         M: Into<GeminiModel>,
@@ -83,6 +94,7 @@ impl GeminiClient {
         client
     }
 
+    /// Helper that seeds a `MessageBuilder` configured for this Gemini model.
     pub fn new_message<S>(&self, content: S) -> MessageBuilder
     where
         S: Into<String>,
@@ -90,6 +102,7 @@ impl GeminiClient {
         MessageBuilder::new(crate::api::API::Gemini(self.model.clone()), content)
     }
 
+    /// Apply caller-supplied configuration overlays.
     fn apply_options(&mut self, options: ClientOptions) {
         match options.endpoint {
             Endpoint::Default => {}
@@ -108,6 +121,7 @@ impl GeminiClient {
         }
     }
 
+    /// Render the scheme/host/port tuple into a base URL.
     fn origin(&self) -> String {
         match (self.scheme, self.port) {
             (Scheme::Https, 443) => format!("https://{}", self.host),
@@ -116,6 +130,7 @@ impl GeminiClient {
         }
     }
 
+    /// Produce the correct `Host` header, including the port when required.
     fn host_header(&self) -> String {
         match (self.scheme, self.port) {
             (Scheme::Https, 443) | (Scheme::Http, 80) => self.host.clone(),
@@ -123,6 +138,7 @@ impl GeminiClient {
         }
     }
 
+    /// Compute the REST path for either synchronous or streaming requests.
     fn path(&self, stream: bool) -> String {
         let (_, model) = self.model.to_strings();
         format!(
@@ -135,14 +151,48 @@ impl GeminiClient {
             }
         )
     }
+
+    /// Placeholder while Gemini gains feature parity with other clients.
+    pub async fn prompt_with_tools(
+        &self,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        let _ = (system_prompt, chat_history, tools);
+        Err("prompt_with_tools is not yet implemented for Gemini".into())
+    }
+
+    /// Placeholder variant that accepts a status channel for future use.
+    pub async fn prompt_with_tools_with_status(
+        &self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        let _ = tx;
+        self.prompt_with_tools(system_prompt, chat_history, tools)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
 impl Prompt for GeminiClient {
+    /// Retrieve the API key from the environment.
     fn get_auth_token() -> String {
         std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY environment variable not set")
     }
 
+    /// Build a `Reqwest` request scoped to the Gemini API.
+    ///
+    /// * `system_prompt` – Gemini's `system_instruction` value.
+    /// * `chat_history` – prior user/model turns expressed as shared `Message`
+    ///   records.
+    /// * `_tools` – placeholder for tool support (Gemini streaming currently
+    ///   ignores it).
+    /// * `stream` – selects between the `generateContent` and
+    ///   `streamGenerateContent` endpoints.
     fn build_request(
         &self,
         system_prompt: String,
@@ -177,6 +227,11 @@ impl Prompt for GeminiClient {
             .json(&body)
     }
 
+    /// Build the raw HTTPS request used by the streaming implementation.
+    ///
+    /// * `system_prompt` – embedded within the `system_instruction` field.
+    /// * `chat_history` – serialised into Gemini's `contents` array.
+    /// * `stream` – flips the path between streaming and non-streaming endpoints.
     fn build_request_raw(
         &self,
         system_prompt: String,
@@ -224,6 +279,11 @@ impl Prompt for GeminiClient {
         )
     }
 
+    /// Execute a non-streaming prompt request against Gemini and return the
+    /// assistant response.
+    ///
+    /// * `system_prompt` – instructions pinned to the returned `Message`.
+    /// * `chat_history` – prior conversation turns supplied to Gemini.
     async fn prompt(
         &self,
         system_prompt: String,
@@ -256,6 +316,12 @@ impl Prompt for GeminiClient {
         })
     }
 
+    /// Execute a streaming prompt request, forwarding token deltas as they
+    /// arrive.
+    ///
+    /// * `chat_history` – context sent to Gemini before streaming begins.
+    /// * `system_prompt` – baseline instruction string.
+    /// * `tx` – channel the caller reads streaming text chunks from.
     async fn prompt_stream(
         &self,
         chat_history: Vec<Message>,
@@ -292,6 +358,7 @@ impl Prompt for GeminiClient {
         })
     }
 
+    /// Extract the assistant payload from Gemini's JSON response body.
     fn read_json_response(
         &self,
         response_json: &serde_json::Value,
@@ -308,6 +375,9 @@ impl Prompt for GeminiClient {
             .ok_or_else(|| "Missing 'candidates[0].content.parts[0].text'".into())
     }
 
+    /// Process Gemini's chunked transfer stream, which interleaves hex length
+    /// headers with JSON fragments, forwarding each text delta to the provided
+    /// channel.
     async fn process_stream(
         &self,
         stream: TlsStream<TcpStream>,

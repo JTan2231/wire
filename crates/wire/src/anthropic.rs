@@ -1,13 +1,16 @@
 use native_tls::TlsStream;
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::net::TcpStream;
 
 use crate::api::{AnthropicModel, Prompt};
 use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::{connect_https, unescape};
-use crate::types::{Message, MessageBuilder, MessageType, Tool};
+use crate::types::{FunctionCall, Message, MessageBuilder, MessageType, Tool};
 
 impl AnthropicModel {
+    /// Turn a human-readable model identifier into the strongly typed variant
+    /// that the rest of the client works with.
     pub fn from_model_name(model: &str) -> Result<Self, String> {
         match model {
             "claude-opus-4-1-20250805" => Ok(AnthropicModel::ClaudeOpus41),
@@ -23,6 +26,8 @@ impl AnthropicModel {
         }
     }
 
+    /// Return a `(provider, model)` tuple suitable for inclusion in outbound
+    /// requests or logging.
     pub fn to_strings(&self) -> (String, String) {
         let model = match self {
             AnthropicModel::ClaudeOpus41 => "claude-opus-4-1-20250805",
@@ -60,6 +65,11 @@ impl From<String> for AnthropicModel {
     }
 }
 
+/// Thin wrapper around Anthropic's Messages API.
+///
+/// The client knows how to construct HTTPS requests, perform streaming reads
+/// when requested, and translate between the crate's canonical `Message`
+/// representation and Anthropic's schema.
 pub struct AnthropicClient {
     pub http_client: reqwest::Client,
     pub model: AnthropicModel,
@@ -71,6 +81,7 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
+    /// Construct a new client with default options against the given model.
     pub fn new<M>(model: M) -> Self
     where
         M: Into<AnthropicModel>,
@@ -78,6 +89,8 @@ impl AnthropicClient {
         Self::with_options(model, ClientOptions::default())
     }
 
+    /// Construct a new client allowing callers to override transport options
+    /// such as the base URL or proxy behaviour.
     pub fn with_options<M>(model: M, options: ClientOptions) -> Self
     where
         M: Into<AnthropicModel>,
@@ -97,6 +110,8 @@ impl AnthropicClient {
         client
     }
 
+    /// Convenience helper that seeds a `MessageBuilder` scoped to the configured
+    /// Anthropic model.
     pub fn new_message<S>(&self, content: S) -> MessageBuilder
     where
         S: Into<String>,
@@ -104,6 +119,7 @@ impl AnthropicClient {
         MessageBuilder::new(crate::api::API::Anthropic(self.model.clone()), content)
     }
 
+    /// Apply optional client configuration modifiers.
     fn apply_options(&mut self, options: ClientOptions) {
         match options.endpoint {
             Endpoint::Default => {}
@@ -122,6 +138,8 @@ impl AnthropicClient {
         }
     }
 
+    /// Render the scheme/host/port combination into an origin string suitable
+    /// for constructing request URLs.
     fn origin(&self) -> String {
         match (self.scheme, self.port) {
             (Scheme::Https, 443) => format!("https://{}", self.host),
@@ -130,6 +148,7 @@ impl AnthropicClient {
         }
     }
 
+    /// Produce the `Host` header value, accounting for non-default ports.
     fn host_header(&self) -> String {
         match (self.scheme, self.port) {
             (Scheme::Https, 443) | (Scheme::Http, 80) => self.host.clone(),
@@ -137,6 +156,9 @@ impl AnthropicClient {
         }
     }
 
+    /// Translate the crate's `Message` representation into Anthropic's Messages
+    /// API payload format. Handles stitching together tool call and tool result
+    /// blocks so the API receives the conversational context it expects.
     fn format_messages(chat_history: &[Message]) -> Vec<serde_json::Value> {
         let mut processed_messages: Vec<serde_json::Value> = Vec::new();
         let mut iter = chat_history.iter().peekable();
@@ -220,14 +242,193 @@ impl AnthropicClient {
 
         processed_messages
     }
+
+    /// Execute prompts with tool support. This currently mirrors the legacy
+    /// behaviour and emits a warning signalling the known instability.
+    async fn prompt_with_tools_internal(
+        &self,
+        tx: Option<tokio::sync::mpsc::Sender<String>>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        if let Some(tx) = tx.as_ref() {
+            let _ = tx
+                .send("warn: anthropic tool support is experimental".to_string())
+                .await;
+        } else {
+            eprintln!("warn: anthropic tool support is experimental and may fail");
+        }
+
+        let mut chat_history = chat_history;
+        let system_prompt = system_prompt.to_string();
+        let api = crate::api::API::Anthropic(self.model.clone());
+        let mut calling_tools = true;
+
+        while calling_tools {
+            let response = self
+                .build_request(
+                    system_prompt.clone(),
+                    chat_history.clone(),
+                    Some(tools.clone()),
+                    false,
+                )
+                .send()
+                .await?;
+
+            let body = response.text().await?;
+            let response_json: serde_json::Value = serde_json::from_str(&body)?;
+
+            let stop_reason = response_json
+                .get("stop_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if stop_reason != "tool_use" {
+                calling_tools = false;
+
+                let mut content = self.read_json_response(&response_json)?;
+                content = unescape(&content);
+                if content.starts_with('"') && content.ends_with('"') && content.len() >= 2 {
+                    content = content[1..content.len() - 1].to_string();
+                }
+
+                chat_history.push(Message {
+                    message_type: MessageType::Assistant,
+                    content,
+                    api: api.clone(),
+                    system_prompt: system_prompt.clone(),
+                    tool_call_id: None,
+                    tool_calls: None,
+                    name: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                });
+            } else {
+                let tool_map: HashMap<String, Tool> =
+                    tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
+
+                let content_array = response_json
+                    .get("content")
+                    .and_then(|value| value.as_array())
+                    .ok_or_else(|| "Missing both content and tool calls")?;
+
+                let text_content: String = content_array
+                    .iter()
+                    .filter(|item| item["type"] == "text")
+                    .filter_map(|text| text["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("");
+
+                let tool_calls: Vec<FunctionCall> = content_array
+                    .iter()
+                    .filter(|item| item["type"] == "tool_use")
+                    .map(|tool_use| FunctionCall {
+                        id: tool_use["id"].as_str().unwrap_or_default().to_string(),
+                        call_type: "function".to_string(),
+                        function: crate::types::Function {
+                            name: tool_use["name"].as_str().unwrap_or_default().to_string(),
+                            arguments: tool_use["input"].to_string(),
+                        },
+                    })
+                    .collect();
+
+                chat_history.push(Message {
+                    message_type: MessageType::Assistant,
+                    content: text_content,
+                    api: api.clone(),
+                    system_prompt: String::new(),
+                    tool_call_id: None,
+                    tool_calls: Some(tool_calls.clone()),
+                    name: Some("?".to_string()),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                });
+
+                for call in tool_calls {
+                    if let Some(tx) = tx.as_ref() {
+                        let _ = tx
+                            .send(format!("calling tool {}...", call.function.name))
+                            .await;
+                    }
+
+                    let tool_name = call.function.name.clone();
+                    let call_id = call.id.clone();
+                    let arguments = call.function.arguments.clone();
+
+                    let tool = tool_map
+                        .get(&tool_name)
+                        .ok_or_else(|| format!("tool {} not found", tool_name))?
+                        .clone();
+
+                    let tool_args: serde_json::Value = serde_json::from_str(&arguments)?;
+
+                    let tool_name_for_message = tool.name.clone();
+
+                    let function_output = tokio::task::spawn_blocking(move || {
+                        tool.function.call(tool_args).to_string()
+                    })
+                    .await
+                    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+                    chat_history.push(Message {
+                        message_type: MessageType::FunctionCallOutput,
+                        content: function_output,
+                        api: api.clone(),
+                        system_prompt: system_prompt.clone(),
+                        tool_call_id: Some(call_id),
+                        tool_calls: None,
+                        name: Some(tool_name_for_message),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    });
+                }
+            }
+        }
+
+        Ok(chat_history)
+    }
+
+    /// Prompt Anthropic without status reporting.
+    pub async fn prompt_with_tools(
+        &self,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(None, system_prompt, chat_history, tools)
+            .await
+    }
+
+    /// Prompt Anthropic while forwarding status updates through the channel.
+    pub async fn prompt_with_tools_with_status(
+        &self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(Some(tx), system_prompt, chat_history, tools)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
 impl Prompt for AnthropicClient {
+    /// Retrieve the API key from the environment.
     fn get_auth_token() -> String {
         std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY environment variable not set")
     }
 
+    /// Build a Reqwest request for an Anthropic message completion.
+    ///
+    /// * `system_prompt` – framing instructions supplied as Anthropic's `system` field.
+    /// * `chat_history` – prior turns the provider should consider; already
+    ///   normalised to the crate's shared `Message` schema.
+    /// * `tools` – optional tool definitions advertised to the model so it can
+    ///   issue tool calls.
+    /// * `stream` – toggles server-sent-events streaming when `true`.
     fn build_request(
         &self,
         system_prompt: String,
@@ -270,6 +471,13 @@ impl Prompt for AnthropicClient {
             .header("anthropic-version", "2023-06-01")
     }
 
+    /// Build the raw HTTPS request payload used by the streaming transport
+    /// implementation. Keeping this separate avoids duplicating the
+    /// serialisation logic.
+    ///
+    /// * `system_prompt` – converted into the `system` field in the body.
+    /// * `chat_history` – serialised into Anthropic's `messages` array.
+    /// * `stream` – when true the request path stays the same but the SSE flag is set.
     fn build_request_raw(
         &self,
         system_prompt: String,
@@ -307,6 +515,11 @@ impl Prompt for AnthropicClient {
         )
     }
 
+    /// Execute a non-streaming prompt request and return the assistant message
+    /// produced by the API.
+    ///
+    /// * `system_prompt` – instructions for the assistant role.
+    /// * `chat_history` – conversation context (excluding the new completion).
     async fn prompt(
         &self,
         system_prompt: String,
@@ -339,6 +552,12 @@ impl Prompt for AnthropicClient {
         })
     }
 
+    /// Execute a streaming prompt request, forwarding partial tokens to the
+    /// caller while collecting the final response.
+    ///
+    /// * `chat_history` – existing conversation turns.
+    /// * `system_prompt` – instructions carried through the session.
+    /// * `tx` – channel the caller can read partial deltas from as SSE chunks arrive.
     async fn prompt_stream(
         &self,
         chat_history: Vec<Message>,
@@ -375,6 +594,7 @@ impl Prompt for AnthropicClient {
         })
     }
 
+    /// Extract the assistant response from Anthropic's JSON payload.
     fn read_json_response(
         &self,
         response_json: &serde_json::Value,
@@ -388,6 +608,9 @@ impl Prompt for AnthropicClient {
             .ok_or_else(|| "Missing 'content[0].text'".into())
     }
 
+    /// Consume the server-sent-event stream from Anthropic, forwarding deltas to
+    /// the provided channel and returning the complete assistant message once
+    /// finished.
     async fn process_stream(
         &self,
         stream: TlsStream<TcpStream>,

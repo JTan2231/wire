@@ -1,13 +1,16 @@
 use native_tls::TlsStream;
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::net::TcpStream;
 
 use crate::api::{OpenAIModel, Prompt};
 use crate::config::{ClientOptions, Endpoint, Scheme};
 use crate::network_common::*;
-use crate::types::{Message, MessageBuilder, MessageType, Tool};
+use crate::types::{FunctionCall, Message, MessageBuilder, MessageType, Tool};
 
 impl OpenAIModel {
+    /// Resolve a user supplied model string into the strongly typed enum
+    /// variant.
     pub fn from_model_name(model: &str) -> Result<Self, String> {
         match model {
             "gpt-5" => Ok(OpenAIModel::GPT5),
@@ -19,6 +22,8 @@ impl OpenAIModel {
         }
     }
 
+    /// Return a `(provider, model)` tuple. The provider component is useful when
+    /// logging or storing messages in a provider-agnostic form.
     pub fn to_strings(&self) -> (String, String) {
         let model_str = match self {
             OpenAIModel::GPT5 => "gpt-5",
@@ -52,6 +57,11 @@ impl From<String> for OpenAIModel {
     }
 }
 
+/// Lightweight client for OpenAI's Chat Completions / Responses APIs.
+///
+/// The struct stores connection metadata (host, path, scheme) alongside the
+/// selected model and an underlying `reqwest::Client`. Helper methods translate
+/// the crate's provider-agnostic message format into OpenAI-specific JSON.
 pub struct OpenAIClient {
     pub http_client: reqwest::Client,
     pub model: OpenAIModel,
@@ -62,6 +72,7 @@ pub struct OpenAIClient {
 }
 
 impl OpenAIClient {
+    /// Construct a new client using default transport settings.
     pub fn new<M>(model: M) -> Self
     where
         M: Into<OpenAIModel>,
@@ -69,6 +80,8 @@ impl OpenAIClient {
         Self::with_options(model, ClientOptions::default())
     }
 
+    /// Construct a client but allow callers to override the transport
+    /// configuration (destinations, proxy behaviour, etc.).
     pub fn with_options<M>(model: M, options: ClientOptions) -> Self
     where
         M: Into<OpenAIModel>,
@@ -87,6 +100,7 @@ impl OpenAIClient {
         client
     }
 
+    /// Helper that returns a `MessageBuilder` pinned to the selected OpenAI model.
     pub fn new_message<S>(&self, content: S) -> MessageBuilder
     where
         S: Into<String>,
@@ -94,6 +108,7 @@ impl OpenAIClient {
         MessageBuilder::new(crate::api::API::OpenAI(self.model.clone()), content)
     }
 
+    /// Apply optional configuration overrides.
     fn apply_options(&mut self, options: ClientOptions) {
         match options.endpoint {
             Endpoint::Default => {}
@@ -112,6 +127,7 @@ impl OpenAIClient {
         }
     }
 
+    /// Compose the scheme/host/port triple into an origin string.
     fn origin(&self) -> String {
         match (self.scheme, self.port) {
             (Scheme::Https, 443) => format!("https://{}", self.host),
@@ -120,21 +136,185 @@ impl OpenAIClient {
         }
     }
 
+    /// Determine the correct `Host` header value for the current endpoint.
     fn host_header(&self) -> String {
         match (self.scheme, self.port) {
             (Scheme::Https, 443) | (Scheme::Http, 80) => self.host.clone(),
             _ => format!("{}:{}", self.host, self.port),
         }
     }
+
+    /// Execute a prompt with tool support, automatically running any tool calls
+    /// until the model returns a final assistant message.
+    async fn prompt_with_tools_internal(
+        &self,
+        tx: Option<tokio::sync::mpsc::Sender<String>>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        let mut chat_history = chat_history;
+        let system_prompt = system_prompt.to_string();
+        let api = crate::api::API::OpenAI(self.model.clone());
+        let mut calling_tools = true;
+
+        while calling_tools {
+            let response = self
+                .build_request(
+                    system_prompt.clone(),
+                    chat_history.clone(),
+                    Some(tools.clone()),
+                    false,
+                )
+                .send()
+                .await?;
+
+            let body = response.text().await?;
+            let response_json: serde_json::Value = serde_json::from_str(&body)?;
+
+            let usage = response_json
+                .get("usage")
+                .cloned()
+                .unwrap_or(serde_json::json!({
+                    "input_tokens": 0,
+                    "completion_tokens": 0
+                }));
+
+            if let Some(mut content) = response_json
+                .get("choices")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+            {
+                calling_tools = false;
+                content = unescape(&content);
+                if content.starts_with('"') && content.ends_with('"') && content.len() >= 2 {
+                    content = content[1..content.len() - 1].to_string();
+                }
+
+                chat_history.push(Message {
+                    message_type: MessageType::Assistant,
+                    content,
+                    api: api.clone(),
+                    system_prompt: system_prompt.clone(),
+                    tool_call_id: None,
+                    tool_calls: None,
+                    name: None,
+                    input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as usize,
+                    output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as usize,
+                });
+            } else {
+                let tool_map: HashMap<String, Tool> =
+                    tools.iter().map(|t| (t.name.clone(), t.clone())).collect();
+
+                let content = response_json
+                    .get("choices")
+                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.get("message"))
+                    .and_then(|v| v.get("tool_calls"))
+                    .ok_or_else(|| "Missing both content and tool calls")?;
+
+                let tool_calls: Vec<FunctionCall> = serde_json::from_value(content.clone())?;
+
+                chat_history.push(Message {
+                    message_type: MessageType::FunctionCall,
+                    content: String::new(),
+                    api: api.clone(),
+                    system_prompt: String::new(),
+                    tool_call_id: None,
+                    tool_calls: Some(tool_calls.clone()),
+                    name: None,
+                    input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as usize,
+                    output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as usize,
+                });
+
+                for call in tool_calls {
+                    if let Some(tx) = tx.as_ref() {
+                        let _ = tx
+                            .send(format!("calling tool {}...", call.function.name))
+                            .await;
+                    }
+
+                    let tool_name = call.function.name.clone();
+                    let call_id = call.id.clone();
+                    let arguments = call.function.arguments.clone();
+
+                    let tool = tool_map
+                        .get(&tool_name)
+                        .ok_or_else(|| format!("tool {} not found", tool_name))?
+                        .clone();
+
+                    let tool_args: serde_json::Value = serde_json::from_str(&arguments)?;
+
+                    let tool_name_for_message = tool.name.clone();
+
+                    let function_output = tokio::task::spawn_blocking(move || {
+                        tool.function.call(tool_args).to_string()
+                    })
+                    .await
+                    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+                    chat_history.push(Message {
+                        message_type: MessageType::FunctionCallOutput,
+                        content: function_output,
+                        api: api.clone(),
+                        system_prompt: system_prompt.clone(),
+                        tool_call_id: Some(call_id),
+                        tool_calls: None,
+                        name: Some(tool_name_for_message),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    });
+                }
+            }
+        }
+
+        Ok(chat_history)
+    }
+
+    /// Prompt the OpenAI API with tool support.
+    pub async fn prompt_with_tools(
+        &self,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(None, system_prompt, chat_history, tools)
+            .await
+    }
+
+    /// Prompt the OpenAI API with tool support while emitting status updates.
+    pub async fn prompt_with_tools_with_status(
+        &self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        system_prompt: &str,
+        chat_history: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        self.prompt_with_tools_internal(Some(tx), system_prompt, chat_history, tools)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
 impl Prompt for OpenAIClient {
+    /// Fetch the OpenAI API key from the environment.
     fn get_auth_token() -> String {
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set")
     }
 
-    /// Build a request for the reqwest client
+    /// Build a `reqwest` request tailored to OpenAI's chat completions endpoint,
+    /// translating the shared `Message` model plus optional tool metadata into
+    /// the JSON payload OpenAI expects.
+    ///
+    /// * `system_prompt` – inserted as the leading system role message.
+    /// * `chat_history` – prior conversation messages emitted by users, tools,
+    ///   or previous assistant responses.
+    /// * `tools` – optional function definitions surfaced through OpenAI's
+    ///   `tools` array.
+    /// * `stream` – toggles server streaming when `true`.
     fn build_request(
         &self,
         system_prompt: String,
@@ -222,7 +402,12 @@ impl Prompt for OpenAIClient {
         request
     }
 
-    /// Build a raw HTTPS request string
+    /// Build the raw HTTPS request string used by the manual TLS streaming
+    /// implementation.
+    ///
+    /// * `system_prompt` – written into the first `messages` entry.
+    /// * `chat_history` – appended sequentially after the system message.
+    /// * `stream` – mirrors the `stream` flag in the JSON payload.
     fn build_request_raw(
         &self,
         system_prompt: String,
@@ -296,6 +481,12 @@ impl Prompt for OpenAIClient {
         request
     }
 
+    /// Execute a streaming request against OpenAI, yielding deltas over the
+    /// provided channel as they arrive.
+    ///
+    /// * `chat_history` – context messages that precede the new completion.
+    /// * `system_prompt` – system role text included at the start of the request.
+    /// * `tx` – channel to deliver streaming content chunks to the caller.
     async fn prompt_stream(
         &self,
         chat_history: Vec<Message>,
@@ -335,6 +526,11 @@ impl Prompt for OpenAIClient {
         })
     }
 
+    /// Execute a non-streaming request and return the assistant response once
+    /// the API call finishes.
+    ///
+    /// * `system_prompt` – system role content captured alongside the message.
+    /// * `chat_history` – prior conversation turns to include in the request.
     async fn prompt(
         &self,
         system_prompt: String,
@@ -371,6 +567,7 @@ impl Prompt for OpenAIClient {
         })
     }
 
+    /// Extract the assistant message content from OpenAI's JSON response body.
     fn read_json_response(
         &self,
         response_json: &serde_json::Value,
@@ -385,6 +582,8 @@ impl Prompt for OpenAIClient {
             .ok_or_else(|| "Missing 'choices[0].message.content'".into())
     }
 
+    /// Process the chunked transfer stream returned by OpenAI's API, forwarding
+    /// partial deltas while reconstructing the final assistant response.
     async fn process_stream(
         &self,
         stream: TlsStream<TcpStream>,

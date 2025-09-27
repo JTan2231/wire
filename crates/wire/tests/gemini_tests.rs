@@ -125,6 +125,32 @@ fn gemini_read_json_response_extracts_text() {
 }
 
 #[test]
+fn gemini_prompt_with_tools_returns_placeholder_error() {
+    if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
+        eprintln!("skipping gemini tool placeholder test");
+        return;
+    }
+
+    with_var("GEMINI_API_KEY", Some("mock-gemini-key"), || {
+        let client = GeminiClient::new("gemini-2.0-flash");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime for gemini tool test");
+
+        runtime.block_on(async move {
+            let err = client
+                .prompt_with_tools(
+                    "Assist helpfully.",
+                    vec![message(MessageType::User, "Use a tool")],
+                    Vec::new(),
+                )
+                .await
+                .expect_err("gemini tools not implemented");
+
+            assert!(err.to_string().contains("not yet implemented"));
+        });
+    });
+}
+
+#[test]
 fn gemini_prompt_integration_uses_mock_server() {
     if std::env::var("WIRE_RUN_MOCK_SERVER_TESTS").is_err() {
         eprintln!("skipping gemini integration test");
