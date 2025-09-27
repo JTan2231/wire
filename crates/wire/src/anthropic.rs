@@ -389,13 +389,12 @@ impl AnthropicClient {
 
         Ok(chat_history)
     }
-
 }
 
 #[async_trait::async_trait]
 impl Prompt for AnthropicClient {
     /// Retrieve the API key from the environment.
-    fn get_auth_token() -> String {
+    fn get_auth_token(&self) -> String {
         std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY environment variable not set")
     }
 
@@ -445,7 +444,7 @@ impl Prompt for AnthropicClient {
         self.http_client
             .post(url)
             .json(&body)
-            .header("x-api-key", AnthropicClient::get_auth_token())
+            .header("x-api-key", self.get_auth_token())
             .header("anthropic-version", "2023-06-01")
     }
 
@@ -488,7 +487,7 @@ impl Prompt for AnthropicClient {
             path,
             self.host_header(),
             json_string.len(),
-            AnthropicClient::get_auth_token(),
+            self.get_auth_token(),
             json_string.trim()
         )
     }

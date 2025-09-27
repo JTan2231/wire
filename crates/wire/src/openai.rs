@@ -278,7 +278,7 @@ impl OpenAIClient {
 #[async_trait::async_trait]
 impl Prompt for OpenAIClient {
     /// Fetch the OpenAI API key from the environment.
-    fn get_auth_token() -> String {
+    fn get_auth_token(&self) -> String {
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set")
     }
 
@@ -371,10 +371,7 @@ impl Prompt for OpenAIClient {
 
         let mut request = self.http_client.post(url.clone()).json(&body);
 
-        request = request.header(
-            "Authorization",
-            format!("Bearer {}", OpenAIClient::get_auth_token()),
-        );
+        request = request.header("Authorization", format!("Bearer {}", self.get_auth_token()));
 
         request
     }
@@ -426,10 +423,7 @@ impl Prompt for OpenAIClient {
         let json_string = serde_json::to_string(&json).expect("Failed to serialize JSON");
 
         let (auth_string, api_version, path) = (
-            format!(
-                "Authorization: Bearer {}\r\n",
-                OpenAIClient::get_auth_token()
-            ),
+            format!("Authorization: Bearer {}\r\n", self.get_auth_token()),
             "\r\n".to_string(),
             self.path.clone(),
         );

@@ -5,7 +5,7 @@ use crate::types::{Message, Tool};
 
 #[async_trait::async_trait]
 pub trait Prompt: Send + Sync {
-    fn get_auth_token() -> String;
+    fn get_auth_token(&self) -> String;
 
     fn build_request(
         &self,

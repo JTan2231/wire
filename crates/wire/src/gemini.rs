@@ -151,13 +151,12 @@ impl GeminiClient {
             }
         )
     }
-
 }
 
 #[async_trait::async_trait]
 impl Prompt for GeminiClient {
     /// Retrieve the API key from the environment.
-    fn get_auth_token() -> String {
+    fn get_auth_token(&self) -> String {
         std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY environment variable not set")
     }
 
@@ -200,7 +199,7 @@ impl Prompt for GeminiClient {
         let url = format!("{}{}", self.origin(), self.path(stream));
 
         self.http_client
-            .post(format!("{}?key={}", url, GeminiClient::get_auth_token()))
+            .post(format!("{}?key={}", url, self.get_auth_token()))
             .json(&body)
     }
 
@@ -236,11 +235,7 @@ impl Prompt for GeminiClient {
         });
 
         let json_string = serde_json::to_string(&body).expect("Failed to serialize JSON");
-        let path = format!(
-            "{}?key={}",
-            self.path(stream),
-            GeminiClient::get_auth_token()
-        );
+        let path = format!("{}?key={}", self.path(stream), self.get_auth_token());
 
         format!(
             "POST {} HTTP/1.1\r\n\
@@ -353,7 +348,8 @@ impl Prompt for GeminiClient {
         tools: Vec<Tool>,
     ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
         let _ = tx;
-        self.prompt_with_tools(system_prompt, chat_history, tools).await
+        self.prompt_with_tools(system_prompt, chat_history, tools)
+            .await
     }
 
     /// Extract the assistant payload from Gemini's JSON response body.
