@@ -14,32 +14,30 @@ use crate::config::ClientOptions;
 use api::{Prompt, API};
 use types::{Message, Tool};
 
-/// Create a client using provider and model identifiers with default options.
+/// Create a client using a model identifier with default options.
 ///
 /// # Errors
-/// Returns an error when the provider/model pair is unknown.
-pub fn new_client(provider: &str, model: &str) -> Result<Box<dyn Prompt>, String> {
-    new_client_internal(provider, model, None)
+/// Returns an error when the model is unknown.
+pub fn new_client(model: &str) -> Result<Box<dyn Prompt>, String> {
+    new_client_internal(model, None)
 }
 
-/// Create a client using provider/model identifiers and custom transport options.
+/// Create a client using a model identifier and custom transport options.
 ///
 /// # Errors
-/// Returns an error when the provider/model pair is unknown.
+/// Returns an error when the model is unknown.
 pub fn new_client_with_options(
-    provider: &str,
     model: &str,
     options: ClientOptions,
 ) -> Result<Box<dyn Prompt>, String> {
-    new_client_internal(provider, model, Some(options))
+    new_client_internal(model, Some(options))
 }
 
 fn new_client_internal(
-    provider: &str,
     model: &str,
     options: Option<ClientOptions>,
 ) -> Result<Box<dyn Prompt>, String> {
-    let api = API::from_strings(provider, model)?;
+    let api = API::from_model(model)?;
 
     Ok(match (api, options) {
         (API::OpenAI(model), Some(options)) => {

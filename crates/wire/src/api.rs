@@ -127,45 +127,33 @@ pub enum GeminiModel {
 }
 
 impl API {
+    pub fn from_model(model: &str) -> Result<Self, String> {
+        if let Ok(model) = OpenAIModel::from_model_name(model) {
+            return Ok(API::OpenAI(model));
+        }
+
+        if let Ok(model) = AnthropicModel::from_model_name(model) {
+            return Ok(API::Anthropic(model));
+        }
+
+        if let Ok(model) = GeminiModel::from_model_name(model) {
+            return Ok(API::Gemini(model));
+        }
+
+        Err(format!("Unknown model: {}", model))
+    }
+
     pub fn from_strings(provider: &str, model: &str) -> Result<Self, String> {
-        match provider {
-            "openai" => {
-                let model = match model {
-                    "gpt-5" => OpenAIModel::GPT5,
-                    "gpt-4o" => OpenAIModel::GPT4o,
-                    "gpt-4o-mini" => OpenAIModel::GPT4oMini,
-                    "o1-preview" => OpenAIModel::O1Preview,
-                    "o1-mini" => OpenAIModel::O1Mini,
-                    _ => return Err(format!("Unknown OpenAI model: {}", model)),
-                };
-                Ok(API::OpenAI(model))
-            }
-            "anthropic" => {
-                let model = match model {
-                    "claude-opus-4-1-20250805" => AnthropicModel::ClaudeOpus41,
-                    "claude-opus-4-20250514" => AnthropicModel::ClaudeOpus4,
-                    "claude-sonnet-4-20250514" => AnthropicModel::ClaudeSonnet4,
-                    "claude-3-7-sonnet-20250219" => AnthropicModel::Claude37Sonnet,
-                    "claude-3-5-sonnet-20241022" => AnthropicModel::Claude35SonnetNew,
-                    "claude-3-5-haiku-20241022" => AnthropicModel::Claude35Haiku,
-                    "claude-3-5-sonnet-20240620" => AnthropicModel::Claude35SonnetOld,
-                    "claude-3-haiku-20240307" => AnthropicModel::Claude3Haiku,
-                    "claude-3-opus-20240229" => AnthropicModel::Claude3Opus,
-                    _ => return Err(format!("Unknown Anthropic model: {}", model)),
-                };
-                Ok(API::Anthropic(model))
-            }
-            "gemini" => {
-                let model = match model {
-                    "gemini-2.5-flash-preview-04-17" => GeminiModel::Gemini25ProExp,
-                    "gemini-2.0-flash" => GeminiModel::Gemini20Flash,
-                    "gemini-2.0-flash-lite" => GeminiModel::Gemini20FlashLite,
-                    "gemini-embedding-exp" => GeminiModel::GeminiEmbedding,
-                    _ => return Err(format!("Unknown Gemini model: {}", model)),
-                };
-                Ok(API::Gemini(model))
-            }
-            _ => Err(format!("Unknown provider: {}", provider)),
+        let api = Self::from_model(model)?;
+        let (expected_provider, _) = api.to_strings();
+
+        if expected_provider == provider {
+            Ok(api)
+        } else {
+            Err(format!(
+                "Model {} belongs to provider {}, not {}",
+                model, expected_provider, provider
+            ))
         }
     }
 

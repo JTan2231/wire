@@ -10,8 +10,8 @@ fn simple_message(api: API, content: &str) -> Vec<Message> {
     vec![MessageBuilder::new(api, content).build()]
 }
 
-fn build_client(provider: &str, model: &str) -> Option<Box<dyn Prompt>> {
-    match panic::catch_unwind(|| new_client(provider, model)) {
+fn build_client(model: &str) -> Option<Box<dyn Prompt>> {
+    match panic::catch_unwind(|| new_client(model)) {
         Ok(Ok(client)) => Some(client),
         Ok(Err(err)) => panic!("unexpected error creating client: {err}"),
         Err(_) => None,
@@ -19,11 +19,10 @@ fn build_client(provider: &str, model: &str) -> Option<Box<dyn Prompt>> {
 }
 
 fn build_client_with_options(
-    provider: &str,
     model: &str,
     options: ClientOptions,
 ) -> Option<Box<dyn Prompt>> {
-    match panic::catch_unwind(|| new_client_with_options(provider, model, options)) {
+    match panic::catch_unwind(|| new_client_with_options(model, options)) {
         Ok(Ok(client)) => Some(client),
         Ok(Err(err)) => panic!("unexpected error creating client with options: {err}"),
         Err(_) => None,
@@ -33,7 +32,7 @@ fn build_client_with_options(
 #[test]
 fn new_client_creates_openai_client() {
     with_var("OPENAI_API_KEY", Some("test-openai"), || {
-        let client = match build_client("openai", "gpt-4o") {
+        let client = match build_client("gpt-4o") {
             Some(client) => client,
             None => return,
         };
@@ -54,7 +53,7 @@ fn new_client_creates_openai_client() {
 #[test]
 fn new_client_creates_anthropic_client() {
     with_var("ANTHROPIC_API_KEY", Some("test-anthropic"), || {
-        let client = match build_client("anthropic", "claude-3-5-sonnet-20241022") {
+        let client = match build_client("claude-3-5-sonnet-20241022") {
             Some(client) => client,
             None => return,
         };
@@ -75,7 +74,7 @@ fn new_client_creates_anthropic_client() {
 #[test]
 fn new_client_creates_gemini_client() {
     with_var("GEMINI_API_KEY", Some("test-gemini"), || {
-        let client = match build_client("gemini", "gemini-2.0-flash") {
+        let client = match build_client("gemini-2.0-flash") {
             Some(client) => client,
             None => return,
         };
@@ -98,7 +97,7 @@ fn new_client_with_options_overrides_base_url() {
     with_var("OPENAI_API_KEY", Some("test-openai"), || {
         let options = ClientOptions::from_base_url("http://localhost:4242")
             .expect("client options from base url");
-        let client = match build_client_with_options("openai", "gpt-4o", options) {
+        let client = match build_client_with_options("gpt-4o", options) {
             Some(client) => client,
             None => return,
         };
@@ -117,9 +116,9 @@ fn new_client_with_options_overrides_base_url() {
 }
 
 #[test]
-fn new_client_errors_on_unknown_provider() {
+fn new_client_errors_on_unknown_model() {
     assert!(matches!(
-        new_client("unknown", "model"),
-        Err(err) if err.contains("Unknown provider")
+        new_client("unknown"),
+        Err(err) if err.contains("Unknown model")
     ));
 }

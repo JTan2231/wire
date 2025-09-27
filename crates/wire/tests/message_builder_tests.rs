@@ -2,6 +2,7 @@ mod common;
 
 use common::sample_tool;
 use std::panic;
+use wire::api::Prompt;
 use wire::openai::OpenAIClient;
 use wire::types::MessageType;
 
@@ -11,7 +12,7 @@ fn openai_builder_sets_defaults() {
         Some(client) => client,
         None => return,
     };
-    let message = client.new_message("hello world").build();
+    let message = client.new_message("hello world".to_string()).build();
 
     assert_eq!(message.message_type, MessageType::User);
     assert_eq!(message.content, "hello world");
@@ -28,7 +29,7 @@ fn builder_allows_role_customization() {
         None => return,
     };
     let message = client
-        .new_message("system msg")
+        .new_message("system msg".to_string())
         .as_system()
         .with_system_prompt("system prompt")
         .with_usage(3, 4)
@@ -49,7 +50,7 @@ fn builder_with_tools_returns_bundle() {
     let tool = sample_tool("demo");
 
     let bundle = client
-        .new_message("needs tools")
+        .new_message("needs tools".to_string())
         .with_tools(vec![tool.clone()]);
 
     let (message, tools) = bundle.into_parts();
