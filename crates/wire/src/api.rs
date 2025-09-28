@@ -1,6 +1,7 @@
 use native_tls::TlsStream;
 use std::net::TcpStream;
 
+use crate::config::ClientOptions;
 use crate::types::{Message, MessageBuilder, Tool};
 
 #[async_trait::async_trait]
@@ -164,4 +165,54 @@ impl API {
             API::Gemini(model) => model.to_strings(),
         }
     }
+
+    pub fn to_client(&self) -> Box<dyn Prompt> {
+        match self {
+            API::OpenAI(model) => Box::new(crate::openai::OpenAIClient::new(model.clone())),
+            API::Anthropic(model) => {
+                Box::new(crate::anthropic::AnthropicClient::new(model.clone()))
+            }
+            API::Gemini(model) => Box::new(crate::gemini::GeminiClient::new(model.clone())),
+        }
+    }
+
+    pub fn to_client_with_options(&self, options: ClientOptions) -> Box<dyn Prompt> {
+        match self {
+            API::OpenAI(model) => Box::new(crate::openai::OpenAIClient::with_options(
+                model.clone(),
+                options.clone(),
+            )),
+            API::Anthropic(model) => Box::new(crate::anthropic::AnthropicClient::with_options(
+                model.clone(),
+                options.clone(),
+            )),
+            API::Gemini(model) => Box::new(crate::gemini::GeminiClient::with_options(
+                model.clone(),
+                options.clone(),
+            )),
+        }
+    }
+}
+
+pub fn get_available_models() -> Vec<API> {
+    vec![
+        API::OpenAI(OpenAIModel::GPT5),
+        API::OpenAI(OpenAIModel::GPT4o),
+        API::OpenAI(OpenAIModel::GPT4oMini),
+        API::OpenAI(OpenAIModel::O1Preview),
+        API::OpenAI(OpenAIModel::O1Mini),
+        API::Anthropic(AnthropicModel::ClaudeOpus41),
+        API::Anthropic(AnthropicModel::ClaudeOpus4),
+        API::Anthropic(AnthropicModel::ClaudeSonnet4),
+        API::Anthropic(AnthropicModel::Claude37Sonnet),
+        API::Anthropic(AnthropicModel::Claude35SonnetNew),
+        API::Anthropic(AnthropicModel::Claude35Haiku),
+        API::Anthropic(AnthropicModel::Claude35SonnetOld),
+        API::Anthropic(AnthropicModel::Claude3Haiku),
+        API::Anthropic(AnthropicModel::Claude3Opus),
+        API::Gemini(GeminiModel::Gemini25ProExp),
+        API::Gemini(GeminiModel::Gemini20Flash),
+        API::Gemini(GeminiModel::Gemini20FlashLite),
+        API::Gemini(GeminiModel::GeminiEmbedding),
+    ]
 }

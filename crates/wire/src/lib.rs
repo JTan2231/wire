@@ -10,6 +10,8 @@ pub mod gemini;
 pub mod mock;
 pub mod openai;
 
+pub use api::get_available_models;
+
 use crate::config::ClientOptions;
 use api::{Prompt, API};
 use types::{Message, Tool};
@@ -39,19 +41,9 @@ fn new_client_internal(
 ) -> Result<Box<dyn Prompt>, String> {
     let api = API::from_model(model)?;
 
-    Ok(match (api, options) {
-        (API::OpenAI(model), Some(options)) => {
-            Box::new(openai::OpenAIClient::with_options(model, options))
-        }
-        (API::OpenAI(model), None) => Box::new(openai::OpenAIClient::new(model)),
-        (API::Anthropic(model), Some(options)) => {
-            Box::new(anthropic::AnthropicClient::with_options(model, options))
-        }
-        (API::Anthropic(model), None) => Box::new(anthropic::AnthropicClient::new(model)),
-        (API::Gemini(model), Some(options)) => {
-            Box::new(gemini::GeminiClient::with_options(model, options))
-        }
-        (API::Gemini(model), None) => Box::new(gemini::GeminiClient::new(model)),
+    Ok(match options {
+        Some(opts) => api.to_client_with_options(opts),
+        None => api.to_client(),
     })
 }
 

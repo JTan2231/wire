@@ -18,10 +18,7 @@ fn build_client(model: &str) -> Option<Box<dyn Prompt>> {
     }
 }
 
-fn build_client_with_options(
-    model: &str,
-    options: ClientOptions,
-) -> Option<Box<dyn Prompt>> {
+fn build_client_with_options(model: &str, options: ClientOptions) -> Option<Box<dyn Prompt>> {
     match panic::catch_unwind(|| new_client_with_options(model, options)) {
         Ok(Ok(client)) => Some(client),
         Ok(Err(err)) => panic!("unexpected error creating client with options: {err}"),
