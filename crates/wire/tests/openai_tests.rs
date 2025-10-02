@@ -5,7 +5,7 @@ use common::{function_call, message, raw_request_body, request_body_json, sample
 use std::panic;
 use temp_env::with_var;
 use wire::api::{OpenAIModel, Prompt};
-use wire::config::ClientOptions;
+use wire::config::{ClientOptions, ThinkingLevel};
 use wire::openai::OpenAIClient;
 use wire::types::MessageType;
 
@@ -15,6 +15,14 @@ where
 {
     let model = model.into();
     panic::catch_unwind(|| OpenAIClient::new(model.clone())).ok()
+}
+
+fn build_client_with_options<M>(model: M, options: ClientOptions) -> Option<OpenAIClient>
+where
+    M: Into<OpenAIModel>,
+{
+    let model = model.into();
+    panic::catch_unwind(move || OpenAIClient::with_options(model, options)).ok()
 }
 
 #[test]
@@ -125,6 +133,32 @@ fn openai_build_request_adds_reasoning_effort_for_gpt5() {
 
     assert_eq!(body["model"], "gpt-5");
     assert_eq!(body["reasoning_effort"], "minimal");
+}
+
+#[test]
+fn openai_client_with_options_overrides_thinking_level_for_gpt5() {
+    std::env::set_var("OPENAI_API_KEY", "openai-key");
+
+    let options = ClientOptions::default().with_thinking_level(ThinkingLevel::High);
+
+    let client = match build_client_with_options(OpenAIModel::GPT5, options) {
+        Some(client) => client,
+        None => return,
+    };
+
+    let request = client
+        .build_request(
+            "Take your time.".to_string(),
+            vec![message(MessageType::User, "Prove this theorem")],
+            None,
+            false,
+        )
+        .build()
+        .expect("gpt-5 request should be buildable");
+
+    let body = request_body_json(&request);
+
+    assert_eq!(body["reasoning_effort"], "high");
 }
 
 #[test]

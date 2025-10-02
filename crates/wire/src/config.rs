@@ -30,10 +30,40 @@ pub enum Endpoint {
     BaseUrl(EndpointUrl),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThinkingLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
+}
+
+impl ThinkingLevel {
+    pub fn as_reasoning_effort(&self) -> &'static str {
+        match self {
+            ThinkingLevel::Minimal => "minimal",
+            ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+        }
+    }
+
+    pub fn from_string(level: &str) -> Result<Self, String> {
+        match level {
+            "minimal" => Ok(ThinkingLevel::Minimal),
+            "low" => Ok(ThinkingLevel::Low),
+            "medium" => Ok(ThinkingLevel::Medium),
+            "high" => Ok(ThinkingLevel::High),
+            other => Err(format!("Unknown thinking level: {}", other)),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
     pub endpoint: Endpoint,
     pub disable_proxy: bool,
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 impl Default for ClientOptions {
@@ -41,6 +71,7 @@ impl Default for ClientOptions {
         Self {
             endpoint: Endpoint::Default,
             disable_proxy: false,
+            thinking_level: None,
         }
     }
 }
@@ -99,6 +130,7 @@ impl ClientOptions {
                 port,
             }),
             disable_proxy: matches!(host.as_str(), "localhost" | "127.0.0.1"),
+            thinking_level: None,
         })
     }
 
@@ -106,5 +138,10 @@ impl ClientOptions {
         let mut options = Self::from_base_url(&server.base_url())?;
         options.disable_proxy = true;
         Ok(options)
+    }
+
+    pub fn with_thinking_level(mut self, thinking_level: ThinkingLevel) -> Self {
+        self.thinking_level = Some(thinking_level);
+        self
     }
 }

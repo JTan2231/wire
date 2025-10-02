@@ -1,4 +1,3 @@
-mod network;
 mod network_common;
 
 pub mod types;
@@ -60,16 +59,10 @@ pub async fn prompt_stream(
     chat_history: &Vec<Message>,
     tx: tokio::sync::mpsc::Sender<String>,
 ) -> Result<Message, Box<dyn std::error::Error>> {
-    let response = match network::prompt_stream(api.clone(), chat_history, system_prompt, tx).await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            println!("ERROR: {}", e);
-            return Err(e);
-        }
-    };
-
-    Ok(response)
+    let client = api.to_client();
+    client
+        .prompt_stream(chat_history.clone(), system_prompt.to_string(), tx)
+        .await
 }
 
 // TODO: This should probably return a full response or something similarly useful

@@ -4,7 +4,7 @@ use std::io::{BufRead, Write};
 use std::net::TcpStream;
 
 use crate::api::{OpenAIModel, Prompt};
-use crate::config::{ClientOptions, Endpoint, Scheme};
+use crate::config::{ClientOptions, Endpoint, Scheme, ThinkingLevel};
 use crate::network_common::*;
 use crate::types::{FunctionCall, Message, MessageBuilder, MessageType, Tool};
 
@@ -69,6 +69,7 @@ pub struct OpenAIClient {
     pub port: u16,
     pub path: String,
     pub scheme: Scheme,
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 impl OpenAIClient {
@@ -87,6 +88,8 @@ impl OpenAIClient {
         M: Into<OpenAIModel>,
     {
         let model = model.into();
+        let default_thinking_level = Self::default_thinking_level(&model);
+
         let mut client = Self {
             http_client: reqwest::Client::new(),
             model,
@@ -94,6 +97,7 @@ impl OpenAIClient {
             port: 443,
             path: "/v1/chat/completions".to_string(),
             scheme: Scheme::Https,
+            thinking_level: default_thinking_level,
         };
 
         client.apply_options(options);
@@ -117,6 +121,17 @@ impl OpenAIClient {
                 .build()
                 .expect("reqwest client without proxy");
         }
+
+        if let Some(thinking_level) = options.thinking_level {
+            self.thinking_level = Some(thinking_level);
+        }
+    }
+
+    fn default_thinking_level(model: &OpenAIModel) -> Option<ThinkingLevel> {
+        match model {
+            OpenAIModel::GPT5 => Some(ThinkingLevel::Minimal),
+            _ => None,
+        }
     }
 
     /// Compose the scheme/host/port triple into an origin string.
@@ -133,6 +148,13 @@ impl OpenAIClient {
         match (self.scheme, self.port) {
             (Scheme::Https, 443) | (Scheme::Http, 80) => self.host.clone(),
             _ => format!("{}:{}", self.host, self.port),
+        }
+    }
+
+    fn reasoning_effort_value(&self) -> Option<&'static str> {
+        match self.model {
+            OpenAIModel::GPT5 => self.thinking_level.map(|level| level.as_reasoning_effort()),
+            _ => None,
         }
     }
 
@@ -341,9 +363,8 @@ impl Prompt for OpenAIClient {
             "stream": stream,
         });
 
-        // TODO: We need a better way of specifying this, preferably something user-configrable
-        if model == "gpt-5" {
-            body["reasoning_effort"] = "minimal".into();
+        if let Some(reasoning_effort) = self.reasoning_effort_value() {
+            body["reasoning_effort"] = reasoning_effort.into();
         }
 
         if let Some(tools) = &tools {
@@ -404,7 +425,7 @@ impl Prompt for OpenAIClient {
             msgs
         };
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "messages": messages.iter()
                 .map(|message| {
@@ -415,6 +436,10 @@ impl Prompt for OpenAIClient {
                 }).collect::<Vec<serde_json::Value>>(),
             "stream": stream,
         });
+
+        if let Some(reasoning_effort) = self.reasoning_effort_value() {
+            body["reasoning_effort"] = reasoning_effort.into();
+        }
 
         let json = serde_json::json!(body);
         let json_string = serde_json::to_string(&json).expect("Failed to serialize JSON");
